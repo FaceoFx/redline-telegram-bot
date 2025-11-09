@@ -3061,7 +3061,7 @@ def main():
     application.add_error_handler(error_handler)
 
     # JobQueue: temp cleanup every 10 minutes
-    def _cleanup_temp(context: ContextTypes.DEFAULT_TYPE):
+    async def _cleanup_temp_cb(context: ContextTypes.DEFAULT_TYPE):
         try:
             cutoff = time.time() - 15 * 60
             for name in os.listdir(TEMP_DIR):
@@ -3074,7 +3074,7 @@ def main():
         except Exception:
             pass
 
-    application.job_queue.run_repeating(lambda c: _cleanup_temp(c), interval=600, first=120)
+    application.job_queue.run_repeating(_cleanup_temp_cb, interval=600, first=120)
     
     # Start bot
     if not ALLOWED_CHANNEL_IDS:
