@@ -2780,20 +2780,22 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Clear user mode
         context.user_data.clear()
         
-        # Post to channel (optional)
+        # Post to channel (optional): use first allowed channel if set
         try:
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=(
-                    f"📊 <b>New Extraction</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"👤 User: {update.effective_user.mention_html()}\n"
-                    f"📁 Type: {result_type}\n"
-                    f"🎯 Results: {len(results):,}\n"
-                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                ),
-                parse_mode='HTML'
-            )
+            target_channel = next(iter(ALLOWED_CHANNEL_IDS)) if ALLOWED_CHANNEL_IDS else None
+            if target_channel is not None:
+                await context.bot.send_message(
+                    chat_id=target_channel,
+                    text=(
+                        f"📊 <b>New Extraction</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"👤 User: {update.effective_user.mention_html()}\n"
+                        f"📁 Type: {result_type}\n"
+                        f"🎯 Results: {len(results):,}\n"
+                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                    ),
+                    parse_mode='HTML'
+                )
         except Exception as e:
             logger.warning(f"Could not post to channel: {e}")
         
@@ -3075,8 +3077,10 @@ def main():
     application.job_queue.run_repeating(lambda c: _cleanup_temp(c), interval=600, first=120)
     
     # Start bot
+    if not ALLOWED_CHANNEL_IDS:
+        logger.warning("No channels configured. Set CHANNEL_IDS or CHANNEL_ID env vars.")
     logger.info("✅ Bot is running! Press Ctrl+C to stop.")
-    logger.info(f"📱 Channel ID: {CHANNEL_ID}")
+    logger.info(f"📱 Channels: {sorted(list(ALLOWED_CHANNEL_IDS))}")
     
     # Run bot
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
