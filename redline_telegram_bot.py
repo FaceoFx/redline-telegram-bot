@@ -2229,7 +2229,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not mode:
         await update.message.reply_text(
             "⚠️ Please select an option first\n"
-            "Use /start to show menu"
+            "Use /redline to show menu"
         )
         return
     
@@ -2846,10 +2846,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if update.effective_chat and not _allow_rate(update.effective_chat.id):
         return
     mode = context.user_data.get('mode')
-    # Support /start in channels or allowed private
+    # Support /redline in channels or allowed private
     if update.effective_message and getattr(update.effective_message, 'text', None):
         txt = update.effective_message.text.strip()
-        if txt.startswith('/start') or txt.startswith('/redline'):
+        if txt.startswith('/redline'):
             await start(update, context)
             return
     
@@ -3039,7 +3039,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Fallback
     await update.message.reply_text(
         "ℹ️ <b>Unknown command</b>\n\n"
-        "Use /start to show menu",
+        "Use /redline to show menu",
         parse_mode='HTML'
     )
 
