@@ -177,16 +177,22 @@ def allowed_chat(update: Update) -> bool:
                 return int(chat.id) in ALLOWED_CHANNEL_IDS
             except Exception:
                 return False
+        # Allow groups/supergroups only if their chat.id is explicitly whitelisted
+        if chat.type in ('group', 'supergroup'):
+            try:
+                return int(chat.id) in ALLOWED_CHANNEL_IDS
+            except Exception:
+                return False
         # Private chats only from owners
         if chat.type == 'private':
             user = update.effective_user
-            if user and OWNER_IDS:
+            if user:
                 try:
                     return int(user.id) in OWNER_IDS
                 except Exception:
                     return False
             return False
-        # Disallow groups/supergroups
+        # Everything else denied
         return False
     except Exception:
         return False
