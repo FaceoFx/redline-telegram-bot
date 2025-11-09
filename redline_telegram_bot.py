@@ -41,8 +41,10 @@ except ImportError:
 # BOT CONFIGURATION
 # ============================================
 
-BOT_TOKEN = "5687444692:AAHSzlDA9n8NlBjw7iqbpGEmBoQ9bGP4gdU"
-CHANNEL_ID = "-880072951,-1001744309811"  # Your channel
+# Read sensitive values from environment variables
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN env var is required")
 
 # Logging configuration
 logging.basicConfig(
@@ -69,12 +71,9 @@ PROXY_CONFIG = None  # legacy, overridden by settings if enabled
 # ============================================
 # ACCESS CONTROL CONFIG
 # ============================================
-# Allow posting only from these channels; comma-separated env also supported
-_chan_env = os.environ.get('CHANNEL_IDS')
-try:
-    _chan_list = (_chan_env or str(CHANNEL_ID)).split(',')
-except Exception:
-    _chan_list = [str(CHANNEL_ID)]
+# Allow posting only from these channels; use env CHANNEL_IDS or CHANNEL_ID
+_chan_env = (os.environ.get('CHANNEL_IDS') or os.environ.get('CHANNEL_ID') or '').strip()
+_chan_list = _chan_env.split(',') if _chan_env else []
 ALLOWED_CHANNEL_IDS = set()
 for _c in _chan_list:
     _c = _c.strip()
