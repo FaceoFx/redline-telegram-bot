@@ -26,7 +26,6 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
-    ChannelPostHandler,
     ContextTypes,
     filters
 )
@@ -2956,9 +2955,9 @@ def main():
     # Private/group messages (we guard inside)
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    # Channel posts
-    application.add_handler(ChannelPostHandler(filters.Document.ALL, handle_document))
-    application.add_handler(ChannelPostHandler(filters.TEXT | filters.COMMAND, handle_text_message))
+    # Channel posts (use MessageHandler with channel chat type filter)
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Document.ALL, handle_document))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & (filters.TEXT | filters.COMMAND), handle_text_message))
     
     # Start bot
     logger.info("✅ Bot is running! Press Ctrl+C to stop.")
