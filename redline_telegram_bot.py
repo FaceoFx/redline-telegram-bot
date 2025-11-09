@@ -5,7 +5,7 @@ Complete extraction bot with M3U Checker & Converters
 Tier 1 Features: All extractions + M3U tools + Progress tracking
 
 Author: Based on REDLINE V15.0
-Bot Version: 2.0 (Enhanced)
+Bot Version: 3.0 (Complete)
 """
 
 import os
@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 # Temp directory for file processing
 TEMP_DIR = 'bot_temp'
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# File size limit (50MB)
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB in bytes
 
 # ============================================
 # REDLINE V15.0 EXTRACTION ENGINE
@@ -389,7 +392,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Instant processing\n"
         "• Multi-threaded checking\n"
         "• Progress tracking\n"
-        "• Professional results\n\n"
+        "• Professional results\n"
+        "• Max file size: 50MB\n\n"
         "Select an option below:"
     )
     
@@ -573,6 +577,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # Check file size
+    file_size = update.message.document.file_size
+    if file_size > MAX_FILE_SIZE:
+        await update.message.reply_text(
+            f"❌ <b>File too large!</b>\n\n"
+            f"Maximum size: {MAX_FILE_SIZE // (1024*1024)}MB\n"
+            f"Your file: {file_size // (1024*1024)}MB\n\n"
+            f"Please split the file and try again.",
+            parse_mode='HTML'
+        )
+        return
+    
     # Show processing message
     status_msg = await update.message.reply_text(
         "⏳ <b>Processing...</b>\n"
@@ -725,6 +741,35 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return
         
+        # === HANDLE COMBO TO M3U CONVERTER ===
+        elif mode == 'combo_to_m3u':
+            # Check if we have combo data stored
+            if 'combo_data' not in context.user_data:
+                # First file upload - store combo data
+                context.user_data['combo_data'] = text
+                os.remove(file_path)
+                
+                await status_msg.edit_text(
+                    "✅ <b>Combo file received!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "📝 Now send the <b>Base URL</b>\n\n"
+                    "<b>Example:</b>\n"
+                    "<code>http://example.com:8080</code>\n\n"
+                    "⚡ Bot will create M3U links like:\n"
+                    "<code>http://example.com:8080/get.php?username=XXX&password=YYY&type=m3u_plus</code>",
+                    parse_mode='HTML'
+                )
+                return
+            else:
+                # This shouldn't happen but handle it
+                await status_msg.edit_text(
+                    "⚠️ <b>Please send Base URL as text message</b>\n\n"
+                    "Not as a file!",
+                    parse_mode='HTML'
+                )
+                os.remove(file_path)
+                return
+        
         # Update status for regular extractions
         await status_msg.edit_text(
             "⏳ <b>Processing...</b>\n"
@@ -840,6 +885,103 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Clean up on error
         if os.path.exists(file_path):
             os.remove(file_path)
+        context.user_data.clear()
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages - for Base URL input in combo_to_m3u"""
+    mode = context.user_data.get('mode')
+    
+    # Check if we're in combo_to_m3u mode and waiting for base URL
+    if mode == 'combo_to_m3u' and 'combo_data' in context.user_data:
+        base_url = update.message.text.strip()
+        
+        # Validate URL format
+        if not base_url.startswith(('http://', 'https://')):
+            await update.message.reply_text(
+                "❌ <b>Invalid URL!</b>\n\n"
+                "URL must start with http:// or https://\n\n"
+                "<b>Example:</b>\n"
+                "<code>http://example.com:8080</code>",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Remove trailing slash
+        base_url = base_url.rstrip('/')
+        
+        # Show processing message
+        status_msg = await update.message.reply_text(
+            "⏳ <b>Converting Combo→M3U...</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔄 Creating M3U links...",
+            parse_mode='HTML'
+        )
+        
+        try:
+            # Get stored combo data
+            combo_data = context.user_data.get('combo_data', '')
+            
+            # Convert combo to M3U
+            results = M3UConverter.combo_to_m3u(combo_data, base_url)
+            
+            if not results:
+                await status_msg.edit_text(
+                    "❌ <b>No valid combos found!</b>\n\n"
+                    "Make sure file contains username:password format",
+                    parse_mode='HTML'
+                )
+                context.user_data.clear()
+                return
+            
+            # Create result file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result_filename = f"COMBO_TO_M3U_{timestamp}.txt"
+            result_path = os.path.join(TEMP_DIR, result_filename)
+            
+            with open(result_path, 'w', encoding='utf-8') as f:
+                f.write(f"# Combo to M3U Conversion\n")
+                f.write(f"# Converted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"# Base URL: {base_url}\n")
+                f.write(f"# Total M3U Links: {len(results)}\n")
+                f.write("#" + "="*50 + "\n\n")
+                f.write('\n'.join(sorted(results)))
+            
+            # Send result
+            with open(result_path, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=result_filename,
+                    caption=(
+                        f"✅ <b>Combo→M3U Complete!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"📊 Created: {len(results):,} M3U links\n"
+                        f"🌐 Base URL: <code>{base_url}</code>\n"
+                        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                    ),
+                    parse_mode='HTML',
+                    reply_markup=get_main_menu()
+                )
+            
+            await status_msg.delete()
+            os.remove(result_path)
+            context.user_data.clear()
+            
+        except Exception as e:
+            logger.error(f"Error in combo_to_m3u: {e}")
+            await status_msg.edit_text(
+                f"❌ <b>Error occurred</b>\n\n"
+                f"Please try again\n"
+                f"Error: {str(e)}",
+                parse_mode='HTML'
+            )
+            context.user_data.clear()
+    else:
+        # Not in a special mode - ignore text messages
+        await update.message.reply_text(
+            "ℹ️ <b>Unknown command</b>\n\n"
+            "Use /start to show menu",
+            parse_mode='HTML'
+        )
 
 # ============================================
 # MAIN - START BOT
@@ -869,6 +1011,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     
     # Start bot
     logger.info("✅ Bot is running! Press Ctrl+C to stop.")
