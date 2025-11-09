@@ -1478,8 +1478,17 @@ def get_back_button() -> InlineKeyboardMarkup:
 
 async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed_chat(update):
+        try:
+            chat = update.effective_chat
+            logger.info(f"Blocked callback from chat type={getattr(chat,'type',None)} id={getattr(chat,'id',None)}")
+        except Exception:
+            pass
         return
     await update.effective_message.reply_text("OK", quote=True)
+
+async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    await update.effective_message.reply_text(f"Chat ID: {getattr(chat,'id',None)}", quote=True)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed_chat(update):
@@ -1492,6 +1501,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - show welcome and main menu - ALL ENGLISH"""
     if not allowed_chat(update):
+        try:
+            chat = update.effective_chat
+            logger.info(f"Blocked /start from chat type={getattr(chat,'type',None)} id={getattr(chat,'id',None)}")
+        except Exception:
+            pass
         return
     if update.effective_chat and not _allow_rate(update.effective_chat.id):
         return
@@ -2816,6 +2830,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages - for Base URL input and Phase 1 flows"""
     if not allowed_chat(update):
+        try:
+            chat = update.effective_chat
+            txt = getattr(update.effective_message,'text',None)
+            logger.info(f"Blocked text from chat type={getattr(chat,'type',None)} id={getattr(chat,'id',None)} text={txt}")
+        except Exception:
+            pass
         return
     if update.effective_chat and not _allow_rate(update.effective_chat.id):
         return
