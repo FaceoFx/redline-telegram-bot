@@ -3071,7 +3071,6 @@ def main():
     start_health_server()
 
     # Add handlers
-    application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("redline", start))
     application.add_handler(CommandHandler("health", health_cmd))
     application.add_handler(CommandHandler("help", help_cmd))
