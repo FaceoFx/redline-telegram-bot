@@ -29,6 +29,8 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+import telegram
+from telegram.constants import ChatAction
 
 try:
     import requests
@@ -188,6 +190,21 @@ def allowed_chat(update: Update) -> bool:
         return False
     except Exception:
         return False
+
+# ============================================
+# RATE LIMITER
+# ============================================
+
+_rate_state: Dict[int, Tuple[float, float]] = {}
+def _allow_rate(chat_id: int, rate: float = 1.0, burst: int = 3) -> bool:
+    now = time.time()
+    last, tokens = _rate_state.get(chat_id, (now, float(burst)))
+    tokens = min(burst, tokens + (now - last) * rate)
+    if tokens >= 1.0:
+        _rate_state[chat_id] = (now, tokens - 1.0)
+        return True
+    _rate_state[chat_id] = (now, tokens)
+    return False
 
 # ============================================
 # REDLINE V15.0 EXTRACTION ENGINE
@@ -864,6 +881,9 @@ class WHOISLookup:
 
         # Reverse IP
         rev_domains = WHOISLookup._reverse_ip(ip) if ip else []
+        # Cap preview in report for readability
+        preview_limit = 40
+        preview_domains = rev_domains[:preview_limit]
         # NS & protection
         ns_list = WHOISLookup._dns_ns(domain) if not WHOISLookup._is_ip(domain) else []
         has_cf = any('cloudflare' in (ns.get('host','')) for ns in ns_list)
@@ -880,7 +900,7 @@ class WHOISLookup:
         lines = []
         lines.append("╭═══════════════════════════════════════╮")
         lines.append("             Who is IP/Domain             ")
-        lines.append("              ⚡ REDLINE V15 ⚡              ")
+        lines.append("            ⚡ REDLINE V15 ⚡            ")
         lines.append(f"             🎯  {domain}             ")
         lines.append(f"           🔎 {ip or '-'}            ")
         lines.append("╰═══════════════════════════════════════╯")
@@ -898,15 +918,18 @@ class WHOISLookup:
         lines.append("──────────────────────")
         lines.append("")
         lines.append("Source 2:")
-        if rev_domains:
+        if preview_domains:
             row = []
-            for i, d in enumerate(rev_domains, 1):
+            for i, d in enumerate(preview_domains, 1):
                 row.append(f"🔗 {d}")
                 if i % 2 == 0:
                     lines.append("          ".join(row))
                     row = []
             if row:
                 lines.append("          ".join(row))
+            if len(rev_domains) > preview_limit:
+                lines.append("")
+                lines.append(f"… and {len(rev_domains) - preview_limit} more")
         lines.append("")
         lines.append("──────────────────────")
         lines.append(f"📊 Total Found: {len(rev_domains)} Unique Domains")
@@ -1048,7 +1071,7 @@ class ProxyFinder:
         "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
     ]
     @staticmethod
-    def fetch(max_proxies: int = 50, timeout: int = 10) -> List[str]:
+    def fetch(max_proxies: int = 200, timeout: int = 10) -> List[str]:
         if not HAS_REQUESTS:
             return []
         out: List[str] = []
@@ -1065,18 +1088,54 @@ class ProxyFinder:
             except Exception:
                 continue
         return out
+
     @staticmethod
     def test(proxy: str, timeout: int = 4) -> bool:
         if not HAS_REQUESTS:
             return False
         try:
-            # Accept full URLs or host:port
-            px = proxy if '://' in proxy else f'http://{proxy}'
-            proxies = {'http': px,'https': px}
-            r = Net.get('http://httpbin.org/ip', proxies=proxies, timeout=timeout)
-            return r.status_code == 200
+            # Accept full URLs or host:port; test both http/https if no scheme
+            candidates: List[str] = []
+            if '://' in proxy:
+                candidates = [proxy]
+            else:
+                candidates = [f'http://{proxy}', f'https://{proxy}']
+            for px in candidates:
+                proxies = {'http': px, 'https': px}
+                try:
+                    # Try HTTPS first for better coverage
+                    r = Net.get('https://httpbin.org/ip', proxies=proxies, timeout=timeout)
+                    if r.status_code == 200:
+                        return True
+                except Exception:
+                    pass
+                try:
+                    r = Net.get('http://httpbin.org/ip', proxies=proxies, timeout=timeout)
+                    if r.status_code == 200:
+                        return True
+                except Exception:
+                    pass
+            return False
         except Exception:
             return False
+
+    @staticmethod
+    def fetch_and_validate(max_fetch: int = 200, validate_top: int = 50, workers: int = 20, timeout: int = 5) -> Tuple[List[str], List[str]]:
+        """Fetch proxies from sources and validate a subset in parallel."""
+        all_list = ProxyFinder.fetch(max_proxies=max_fetch, timeout=timeout)
+        to_test = all_list[:validate_top]
+        working: List[str] = []
+        if to_test:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(ProxyFinder.test, p, timeout): p for p in to_test}
+                for fu in as_completed(futs):
+                    try:
+                        ok = fu.result()
+                        if ok:
+                            working.append(futs[fu])
+                    except Exception:
+                        pass
+        return all_list, working
 
 # ============================================
 # HEALTH CHECK WEB SERVER (for Koyeb)
@@ -1111,6 +1170,18 @@ def start_health_server():
         logger.info(f"🌐 Health server listening on port {port}")
     except Exception as e:
         logger.warning(f"Health server failed to start: {e}")
+
+# ============================================
+# GLOBAL ERROR HANDLER
+# ============================================
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    err = context.error
+    # Ignore duplicate polling conflicts during rolling deploys
+    if isinstance(err, telegram.error.Conflict):
+        logger.warning("Ignoring Conflict: another getUpdates client detected. Ensure single instance.")
+        return
+    logger.error(f"Unhandled error: {err}")
 
 # ============================================
 # M3U CONVERTERS - TIER 1 FEATURE
@@ -1405,34 +1476,31 @@ def get_back_button() -> InlineKeyboardMarkup:
 # BOT COMMAND HANDLERS
 # ============================================
 
+async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed_chat(update):
+        return
+    await update.effective_message.reply_text("OK", quote=True)
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed_chat(update):
+        return
+    await update.effective_message.reply_html(
+        "🔥 <b>REDLINE V15.0</b>\n"
+        "Use the menu buttons to run tools.\n"
+        "Upload files in the channel to start batch flows."
+    )
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - show welcome and main menu - ALL ENGLISH"""
     if not allowed_chat(update):
+        return
+    if update.effective_chat and not _allow_rate(update.effective_chat.id):
         return
     user = update.effective_user
     
     welcome_text = (
         f"👋 Welcome {user.mention_html()}!\n\n"
-        "🔥 <b>REDLINE V15.0 - Enhanced Bot</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🚀 <b>All REDLINE Features + M3U Tools!</b>\n\n"
-        "📊 <b>EXTRACTION:</b>\n"
-        "• N:P (Phone:Password)\n"
-        "• U:P (Username:Password)\n"
-        "• M:P (Email:Password)\n"
-        "• M3U Links\n"
-        "• MAC:KEY\n"
-        "• Extract ALL at once\n\n"
-        "🔗 <b>M3U TOOLS:</b>\n"
-        "• Check M3U Links (Live validation)\n"
-        "• Convert M3U → Combo\n"
-        "• Convert Combo → M3U\n\n"
-        "⚡ <b>Features:</b>\n"
-        "• Instant processing\n"
-        "• Multi-threaded checking\n"
-        "• Progress tracking\n"
-        "• Professional results\n"
-        "• Max file size: 50MB\n\n"
+        "🔥 <b>REDLINE V15.0</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "Select an option below:"
     )
     
@@ -1447,6 +1515,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not allowed_chat(update):
         return
+    if update.effective_chat and not _allow_rate(update.effective_chat.id):
+        return
     mode = context.user_data.get('mode', '')
     data = query.data
     
@@ -1459,8 +1529,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await query.edit_message_text(
             "👋 Welcome!\n\n"
-            "🔥 <b>REDLINE V15.0 - Enhanced Bot</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔥 <b>REDLINE V15.0</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "Select an option below:",
             parse_mode='HTML',
             reply_markup=get_main_menu()
@@ -1583,13 +1653,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⏳ Collecting proxies from trusted sources...",
             parse_mode='HTML'
         )
-        # Fetch and test proxies quickly
-        proxies = ProxyFinder.fetch(max_proxies=50)
-        # Optionally test top 20
-        working = []
-        for p in proxies[:20]:
-            if ProxyFinder.test(p):
-                working.append(p)
+        # Fetch and validate in parallel
+        proxies, working = ProxyFinder.fetch_and_validate(max_fetch=200, validate_top=50, workers=20, timeout=5)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         result_filename = f"PROXIES_{timestamp}.txt"
         result_path = os.path.join(TEMP_DIR, result_filename)
@@ -1679,6 +1744,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_html("❌ <b>Invalid URL</b>")
             return
         status_msg = await update.message.reply_html("⏳ <b>Probing M3U...</b>")
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        except Exception:
+            pass
         ok, info, err = M3UProbe.probe(url, timeout=8, proxies=get_proxies())
         if ok:
             try:
@@ -1724,6 +1793,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             host = context.user_data.get('host')
             status_msg = await update.message.reply_html("⏳ <b>Building M3U from MAC...</b>")
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+        except Exception:
+            pass
             channels: List[Dict] = []
             error = ''
             if HAS_REQUESTS:
@@ -2206,6 +2279,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             found = 0
             total = len(combos)
             blocks: List[str] = []
+            # show typing while processing
+            try:
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            except Exception:
+                pass
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 futs = {ex.submit(UpProbe.probe_up, host, u, p, 8, get_proxies()): (u, p) for (u, p) in combos}
                 for fu in as_completed(futs):
@@ -2279,6 +2357,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             found = 0
             total = len(links)
             blocks: List[str] = []
+            # show typing while processing
+            try:
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            except Exception:
+                pass
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 futs = {ex.submit(M3UProbe.probe, u, 8, get_proxies()): u for u in links}
                 for fu in as_completed(futs):
@@ -2732,10 +2815,13 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Handle text messages - for Base URL input and Phase 1 flows"""
     if not allowed_chat(update):
         return
+    if update.effective_chat and not _allow_rate(update.effective_chat.id):
+        return
     mode = context.user_data.get('mode')
     # Support /start in channels or allowed private
     if update.effective_message and getattr(update.effective_message, 'text', None):
-        if update.effective_message.text.strip().startswith('/start'):
+        txt = update.effective_message.text.strip()
+        if txt.startswith('/start') or txt.startswith('/redline'):
             await start(update, context)
             return
     
@@ -2764,6 +2850,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             "🔄 Creating M3U links...",
             parse_mode='HTML'
         )
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        except Exception:
+            pass
         
         try:
             # Get stored combo data
@@ -2846,6 +2936,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 return
             host = context.user_data.get('host')
             status_msg = await update.message.reply_html("⏳ <b>Fetching channels...</b>")
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+        except Exception:
+            pass
             channels, err = MACConverter.mac_to_m3u(host, mac)
             if err or not channels:
                 await status_msg.edit_text(
@@ -2950,6 +3044,9 @@ def main():
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("redline", start))
+    application.add_handler(CommandHandler("health", health_cmd))
+    application.add_handler(CommandHandler("help", help_cmd))
     application.add_handler(CallbackQueryHandler(button_callback))
     # Private/group messages (we guard inside)
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -2957,13 +3054,32 @@ def main():
     # Channel posts (use MessageHandler with channel chat type filter)
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & (filters.TEXT | filters.COMMAND), handle_text_message))
+
+    # Register global error handler
+    application.add_error_handler(error_handler)
+
+    # JobQueue: temp cleanup every 10 minutes
+    def _cleanup_temp(context: ContextTypes.DEFAULT_TYPE):
+        try:
+            cutoff = time.time() - 15 * 60
+            for name in os.listdir(TEMP_DIR):
+                p = os.path.join(TEMP_DIR, name)
+                try:
+                    if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                        os.remove(p)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    application.job_queue.run_repeating(lambda c: _cleanup_temp(c), interval=600, first=120)
     
     # Start bot
     logger.info("✅ Bot is running! Press Ctrl+C to stop.")
     logger.info(f"📱 Channel ID: {CHANNEL_ID}")
     
     # Run bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == '__main__':
     try:
