@@ -26,8 +26,9 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
-    filters,
-    ContextTypes
+    ChannelPostHandler,
+    ContextTypes,
+    filters
 )
 
 try:
@@ -42,7 +43,7 @@ except ImportError:
 # ============================================
 
 BOT_TOKEN = "5687444692:AAHSzlDA9n8NlBjw7iqbpGEmBoQ9bGP4gdU"
-CHANNEL_ID = "-880072951"  # Your channel
+CHANNEL_ID = "-880072951,-1001744309811"  # Your channel
 
 # Logging configuration
 logging.basicConfig(
@@ -65,6 +66,42 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB in bytes
 # SOCKS5 Proxy Example (requires: pip install requests[socks]):
 #   PROXY_CONFIG = {'http': 'socks5://proxy:port', 'https': 'socks5://proxy:port'}
 PROXY_CONFIG = None  # legacy, overridden by settings if enabled
+
+# ============================================
+# ACCESS CONTROL CONFIG
+# ============================================
+# Allow posting only from these channels; comma-separated env also supported
+_chan_env = os.environ.get('CHANNEL_IDS')
+try:
+    _chan_list = (_chan_env or str(CHANNEL_ID)).split(',')
+except Exception:
+    _chan_list = [str(CHANNEL_ID)]
+ALLOWED_CHANNEL_IDS = set()
+for _c in _chan_list:
+    _c = _c.strip()
+    if not _c:
+        continue
+    try:
+        ALLOWED_CHANNEL_IDS.add(int(_c))
+    except Exception:
+        # supports "-100..." strings too
+        try:
+            ALLOWED_CHANNEL_IDS.add(int(_c))
+        except Exception:
+            pass
+
+# Owner allowlist (comma-separated numeric IDs via env OWNER_IDS)
+_owner_env = os.environ.get('OWNER_IDS', '').strip()
+OWNER_IDS = set()
+if _owner_env:
+    for s in _owner_env.split(','):
+        s = s.strip()
+        if not s:
+            continue
+        try:
+            OWNER_IDS.add(int(s))
+        except Exception:
+            pass
 
 # ============================================
 # SETTINGS (persistent)
@@ -125,30 +162,34 @@ class Net:
                     time.sleep(backoff * (2 ** i))
         raise last_exc
 
-    @staticmethod
-    def fetch_first_group(m3u_url: str, timeout: int = 5, proxies: dict | None = None, max_kb: int = 256) -> str:
-        if not HAS_REQUESTS:
-            raise RuntimeError('requests not installed')
-        last_exc = None
-        for i in range(3):
+# ============================================
+# ACCESS CONTROL: CHANNEL-ONLY GUARD
+# ============================================
+
+def allowed_chat(update: Update) -> bool:
+    try:
+        chat = update.effective_chat
+        if not chat:
+            return False
+        # Channel posts must be from allowed channels
+        if chat.type == 'channel':
             try:
-                r = Net.get(m3u_url, timeout=timeout, allow_redirects=True, proxies=proxies, headers={"User-Agent": "Mozilla/5.0"}, stream=True)
-                if r.status_code != 200:
-                    return ""
-                content = ""
-                for chunk in r.iter_content(1024):
-                    content += chunk.decode('utf-8', errors='ignore')
-                    if len(content) > max_kb * 1024:
-                        break
-                match = re.search(r'#EXTINF:-1,(.+?)\n(.+?)\n', content, re.DOTALL)
-                if match:
-                    return match.group(1) + "\n" + match.group(2)
-                return ""
-            except Exception as e:
-                last_exc = e
-                if i < 2:
-                    time.sleep(0.5)
-        raise last_exc
+                return int(chat.id) in ALLOWED_CHANNEL_IDS
+            except Exception:
+                return False
+        # Private chats only from owners
+        if chat.type == 'private':
+            user = update.effective_user
+            if user and OWNER_IDS:
+                try:
+                    return int(user.id) in OWNER_IDS
+                except Exception:
+                    return False
+            return False
+        # Disallow groups/supergroups
+        return False
+    except Exception:
+        return False
 
 # ============================================
 # REDLINE V15.0 EXTRACTION ENGINE
@@ -1368,6 +1409,8 @@ def get_back_button() -> InlineKeyboardMarkup:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - show welcome and main menu - ALL ENGLISH"""
+    if not allowed_chat(update):
+        return
     user = update.effective_user
     
     welcome_text = (
@@ -1395,7 +1438,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Select an option below:"
     )
     
-    await update.message.reply_html(
+    await update.effective_message.reply_html(
         welcome_text,
         reply_markup=get_main_menu()
     )
@@ -1404,11 +1447,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all button callbacks - ALL ENGLISH"""
     query = update.callback_query
     await query.answer()
-    
+    if not allowed_chat(update):
+        return
+    mode = context.user_data.get('mode', '')
     data = query.data
     
     # No-op for section headers
     if data == "noop":
+        return
+
+    # Back to main
+    if data == "back":
+        context.user_data.clear()
+        await query.edit_message_text(
+            "👋 Welcome!\n\n"
+            "🔥 <b>REDLINE V15.0 - Enhanced Bot</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Select an option below:",
+            parse_mode='HTML',
+            reply_markup=get_main_menu()
+        )
         return
 
     # === Settings ===
@@ -1573,21 +1631,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return
     
-    # PHASE 3: U:P Xtream Auto (ask host then prompt file)
-    if mode == 'up_xtream_auto':
-        step = context.user_data.get('step')
-        if step == 'ask_host':
-            host = update.message.text.strip()
-            if not host.startswith(('http://','https://')):
-                await update.message.reply_html("❌ <b>Invalid host</b>\nExample: <code>http://example.com:8080</code>")
-                return
-            context.user_data['host'] = host.rstrip('/')
-            context.user_data['step'] = 'await_file'
-            await update.message.reply_html(
-                "✅ Host saved!\n\n📤 Now send the <b>combos file</b> (one <code>username:password</code> per line). Max 500.",
-                reply_markup=get_back_button()
-            )
-            return
 
     # PHASE 3: U:P Xtream Single (host then user:pass)
     if mode == 'up_xtream_single':
@@ -2689,7 +2732,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages - for Base URL input and Phase 1 flows"""
+    if not allowed_chat(update):
+        return
     mode = context.user_data.get('mode')
+    # Support /start in channels or allowed private
+    if update.effective_message and getattr(update.effective_message, 'text', None):
+        if update.effective_message.text.strip().startswith('/start'):
+            await start(update, context)
+            return
     
     # Check if we're in combo_to_m3u mode and waiting for base URL
     if mode == 'combo_to_m3u' and 'combo_data' in context.user_data:
@@ -2903,8 +2953,12 @@ def main():
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
+    # Private/group messages (we guard inside)
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    # Channel posts
+    application.add_handler(ChannelPostHandler(filters.Document.ALL, handle_document))
+    application.add_handler(ChannelPostHandler(filters.TEXT | filters.COMMAND, handle_text_message))
     
     # Start bot
     logger.info("✅ Bot is running! Press Ctrl+C to stop.")
