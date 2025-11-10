@@ -38,453 +38,6 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
-try:
-    import google.generativeai as genai
-    HAS_GEMINI = True
-except ImportError:
-    HAS_GEMINI = False
-
-try:
-    from openai import OpenAI
-    HAS_OPENAI = True
-except ImportError:
-    HAS_OPENAI = False
-
-# ============================================
-# AI ASSISTANT (AI: Gemini)
-# ============================================
-
-class GeminiAI:
-    """AI-powered features using Google Gemini"""
-    
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.environ.get('GEMINI_API_KEY')
-        self.enabled = False
-        self.model = None
-        
-        if HAS_GEMINI and self.api_key:
-            try:
-                genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-pro')
-                self.enabled = True
-            except Exception:
-                self.enabled = False
-    
-    async def chat(self, question: str, context: str = "") -> str:
-        """Chat with AI assistant"""
-        if not self.enabled:
-            return "🤖 AI Support is not available. Please contact administrator."
-        
-        try:
-            prompt = f"{context}\n\nUser question: {question}" if context else question
-            response = await asyncio.to_thread(
-                self.model.generate_content,
-                prompt
-            )
-            return response.text
-        except Exception as e:
-            return f"❌ AI Error: {str(e)}"
-    
-    async def analyze_file(self, text: str, file_type: str = "combo") -> str:
-        """Analyze file content with AI"""
-        if not self.enabled:
-            return "AI analysis not available"
-        
-        try:
-            prompt = f"""Analyze this IPTV {file_type} file content and provide:
-1. File type and format
-2. Number of entries
-3. Quality assessment
-4. Any issues or recommendations
-
-Content (first 2000 chars):
-{text[:2000]}"""
-            
-            response = await asyncio.to_thread(
-                self.model.generate_content,
-                prompt
-            )
-            return response.text
-        except Exception as e:
-            return f"Analysis failed: {str(e)}"
-    
-    async def explain_combo(self, combo: str) -> str:
-        """Explain what a combo is and how to use it"""
-        if not self.enabled:
-            return "AI explanation not available"
-        
-        try:
-            prompt = f"""Explain this IPTV combo/credential in simple terms:
-{combo}
-
-Include:
-- What type it is (M3U, U:P, M:P, MAC, etc.)
-- How to use it
-- What it's for"""
-            
-            response = await asyncio.to_thread(
-                self.model.generate_content,
-                prompt
-            )
-            return response.text
-        except Exception as e:
-            return f"Explanation failed: {str(e)}"
-    
-    async def smart_search(self, query: str, text: str) -> str:
-        """AI-powered smart search"""
-        if not self.enabled:
-            return "AI search not available"
-        
-        try:
-            prompt = f"""Search this IPTV data for: {query}
-
-Data:
-{text[:3000]}
-
-Return only the relevant matches, one per line."""
-            
-            response = await asyncio.to_thread(
-                self.model.generate_content,
-                prompt
-            )
-            return response.text
-        except Exception as e:
-            return f"Search failed: {str(e)}"
-    
-    async def help_command(self, question: str) -> str:
-        """Get help on bot features"""
-        if not self.enabled:
-            return "AI help not available"
-        
-        try:
-            prompt = f"""You are an expert assistant for the REDLINE V15.0 IPTV bot.
-
-Bot features:
-- Extract combos: N:P (phone:pass), U:P (user:pass), M:P (email:pass), M3U links, MAC addresses
-- Check M3U links automatically
-- Convert between formats (M3U ↔ Combo, M3U ↔ MAC)
-- Panel search and checking
-- Keyword search in files
-- StreamCreed finder
-- WHOIS lookup
-
-User question: {question}
-
-Provide a helpful, concise answer."""
-            
-            response = await asyncio.to_thread(
-                self.model.generate_content,
-                prompt
-            )
-            return response.text
-        except Exception as e:
-            return f"Help failed: {str(e)}"
-
-class PerplexityAI:
-    """Search-enhanced AI using Perplexity"""
-    
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.environ.get('PERPLEXITY_API_KEY')
-        self.enabled = False
-        self.client = None
-        
-        if HAS_OPENAI and self.api_key:
-            try:
-                self.client = OpenAI(
-                    api_key=self.api_key,
-                    base_url="https://api.perplexity.ai"
-                )
-                self.enabled = True
-            except Exception:
-                self.enabled = False
-    
-    async def search_chat(self, question: str) -> str:
-        """Chat with search-enhanced AI"""
-        if not self.enabled:
-            return None
-        
-        try:
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model="llama-3.1-sonar-small-128k-online",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert IPTV assistant with real-time search capabilities. Provide accurate, up-to-date information."
-                    },
-                    {
-                        "role": "user",
-                        "content": question
-                    }
-                ]
-            )
-            return response.choices[0].message.content
-        except Exception:
-            return None
-
-class ChatGPTAI:
-    """OpenAI ChatGPT for balanced AI tasks"""
-    
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.environ.get('OPENAI_API_KEY')
-        self.enabled = False
-        self.client = None
-        
-        if HAS_OPENAI and self.api_key:
-            try:
-                self.client = OpenAI(api_key=self.api_key)
-                self.enabled = True
-            except Exception:
-                self.enabled = False
-    
-    async def chat(self, question: str, context: str = "") -> str:
-        """Chat with GPT-4o-mini"""
-        if not self.enabled:
-            return None
-        
-        try:
-            messages = [
-                {"role": "system", "content": "You are an expert IPTV assistant. Be concise and helpful."}
-            ]
-            if context:
-                messages.append({"role": "system", "content": context})
-            messages.append({"role": "user", "content": question})
-            
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model="gpt-4o-mini",
-                messages=messages,
-                max_tokens=500
-            )
-            return response.choices[0].message.content
-        except Exception:
-            return None
-    
-    async def analyze_file(self, text: str) -> str:
-        """Quick file analysis"""
-        if not self.enabled:
-            return None
-        
-        try:
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a file analyzer. Be very concise."},
-                    {"role": "user", "content": f"Analyze this IPTV file sample:\n{text[:1000]}"}
-                ],
-                max_tokens=300
-            )
-            return response.choices[0].message.content
-        except Exception:
-            return None
-
-class TripleAI:
-    """AI Support powered by Google Gemini"""
-    
-    def __init__(self):
-        self.gemini = GeminiAI()
-        # Paid APIs disabled to avoid charges
-        self.perplexity = None  # Would charge after $5/month
-        self.chatgpt = None     # Separate billing from GO plan
-        self.enabled = self.gemini.enabled
-    
-    async def chat(self, question: str, context: str = "") -> str:
-        """AI-powered chat support"""
-        if self.gemini.enabled:
-            result = await self.gemini.chat(question, context)
-            if result:
-                return result
-        
-        return "🤖 AI Support is temporarily unavailable."
-    
-    async def analyze_file(self, text: str, file_type: str = "combo") -> str:
-        """AI-powered file analysis"""
-        if self.gemini.enabled:
-            result = await self.gemini.analyze_file(text, file_type)
-            if result:
-                return result
-        
-        return "AI analysis not available"
-    
-    async def explain_combo(self, combo: str) -> str:
-        """AI-powered combo explanation"""
-        if self.gemini.enabled:
-            result = await self.gemini.explain_combo(combo)
-            if result:
-                return result
-        
-        return "AI explanation not available"
-    
-    async def help_command(self, question: str) -> str:
-        """AI-powered help support"""
-        if self.gemini.enabled:
-            result = await self.gemini.help_command(question)
-            if result:
-                return result
-        
-        return "AI help not available"
-    
-    def get_status(self) -> str:
-        """Get AI status"""
-        if self.gemini.enabled:
-            return "✅ AI Support"
-        return "❌ Disabled"
-    
-    # === SMART FEATURES (CACHED TO SAVE API CALLS) ===
-    
-    _file_type_cache = {}  # Cache file type detection
-    _quality_cache = {}    # Cache quality scores
-    
-    async def detect_file_type(self, text_sample: str) -> dict:
-        """Auto-detect file type (AI-powered)"""
-        # Cached for performance
-        if not self.gemini.enabled:
-            return {"type": "unknown", "confidence": 0}
-        
-        # Use only first 500 chars to save tokens
-        sample = text_sample[:500]
-        cache_key = hash(sample)
-        
-        # Check cache first
-        if cache_key in self._file_type_cache:
-            return self._file_type_cache[cache_key]
-        
-        try:
-            prompt = f"""Analyze this file sample and detect type. Return ONLY a JSON object:
-{{"type": "up", "confidence": 0-100}}
-
-Types: up (user:pass), mp (email:pass), np (phone:pass), m3u (playlist), mac (MAC addresses), mixed
-
-Sample:
-{sample}"""
-            
-            response = await asyncio.to_thread(
-                self.gemini.model.generate_content,
-                prompt
-            )
-            
-            # Parse response
-            import json
-            result = json.loads(response.text.strip('```json\n').strip('```').strip())
-            
-            # Cache result
-            self._file_type_cache[cache_key] = result
-            return result
-        except Exception:
-            return {"type": "unknown", "confidence": 0}
-    
-    async def score_quality(self, combos: list, sample_size: int = 5) -> dict:
-        """Score combo quality (AI-powered)"""
-        # Cached for performance, samples 5 combos only
-        if not self.gemini.enabled or not combos:
-            return {"overall": 0, "advice": ""}
-        
-        # Only check FIRST 5 combos to save API calls
-        sample = combos[:sample_size]
-        cache_key = hash(str(sample))
-        
-        # Check cache
-        if cache_key in self._quality_cache:
-            return self._quality_cache[cache_key]
-        
-        try:
-            prompt = f"""Rate these IPTV combos quality 0-100. Return ONLY JSON:
-{{"overall": 0-100, "advice": "short tip"}}
-
-Combos:
-{chr(10).join(sample)}"""
-            
-            response = await asyncio.to_thread(
-                self.gemini.model.generate_content,
-                prompt
-            )
-            
-            import json
-            result = json.loads(response.text.strip('```json\n').strip('```').strip())
-            
-            # Cache result
-            self._quality_cache[cache_key] = result
-            return result
-        except Exception:
-            return {"overall": 50, "advice": ""}
-    
-    async def recommend_action(self, file_type: str, count: int) -> str:
-        """Recommend next action (SIMPLE - no API call needed for common cases)"""
-        # Hardcoded recommendations to save API calls
-        recommendations = {
-            "up": f"✅ Found {count} U:P combos\n\n🤖 Recommended:\n• Use 'Quick U:P Check' to verify\n• Or convert to M3U playlist",
-            "mp": f"✅ Found {count} M:P combos\n\n🤖 Recommended:\n• Check for panel credentials\n• Use 'Panel Searcher' to find servers",
-            "np": f"✅ Found {count} N:P combos\n\n🤖 Recommended:\n• Verify phone numbers\n• Check password strength",
-            "m3u": f"✅ Found {count} M3U links\n\n🤖 Recommended:\n• Use 'Auto Check M3U' to verify\n• Check channel availability",
-            "mac": f"✅ Found {count} MAC addresses\n\n🤖 Recommended:\n• Use 'MAC Scanner' to test\n• Verify host compatibility"
-        }
-        
-        return recommendations.get(file_type, f"✅ Found {count} items")
-    
-    async def analyze_whois(self, whois_report: str, target: str) -> str:
-        """Analyze WHOIS data and provide AI trust assessment"""
-        if not self.gemini.enabled:
-            return ""
-        
-        try:
-            # Use only first 2000 chars to save tokens
-            report_sample = whois_report[:2000]
-            
-            prompt = f"""Analyze this WHOIS/domain data and provide a concise trust assessment.
-
-Target: {target}
-
-WHOIS Data:
-{report_sample}
-
-Provide ONLY:
-1. Trust Score (0-100)
-2. Key findings (3-4 bullet points)
-3. One-line recommendation
-
-Format as:
-📊 Trust Score: XX/100
-Key Findings:
-• [finding 1]
-• [finding 2]
-• [finding 3]
-💡 Recommendation: [one line]
-
-Be concise and focus on IPTV/hosting quality indicators."""
-            
-            response = await asyncio.to_thread(
-                self.gemini.model.generate_content,
-                prompt
-            )
-            
-            analysis = response.text.strip()
-            
-            # Add emoji indicators based on content
-            if "trust" in analysis.lower() or "legitimate" in analysis.lower():
-                return f"🤖 AI Trust Analysis:\n{analysis}"
-            else:
-                return f"🤖 AI Analysis:\n{analysis}"
-                
-        except Exception:
-            return ""
-    
-    async def analyze_error(self, error_msg: str) -> str:
-        """Quick error analysis (CACHED)"""
-        # Simple pattern matching - no API call for common errors
-        error_lower = error_msg.lower()
-        
-        if "timeout" in error_lower or "timed out" in error_lower:
-            return "🤖 Server not responding. Try:\n• Check internet connection\n• Server might be down\n• Try again in few minutes"
-        elif "403" in error_lower or "forbidden" in error_lower:
-            return "🤖 Access denied. Try:\n• Server blocks your region\n• Use proxy/VPN\n• Credentials might be wrong"
-        elif "404" in error_lower:
-            return "🤖 Not found. Try:\n• Check URL spelling\n• Server might have moved\n• Contact provider"
-        elif "connection" in error_lower:
-            return "🤖 Connection issue. Try:\n• Check internet\n• Server might be offline\n• Try different time"
-        else:
-            return "🤖 Unexpected error. Try:\n• Check file format\n• Reduce file size\n• Contact support"
-
 # ============================================
 # HELPER UTILITIES (Progress Tracking & Caching)
 # ============================================
@@ -745,16 +298,6 @@ def get_proxies() -> dict | None:
         scheme = 'http' if pv.startswith(('http://','socks5://')) else 'http'
         return {'http': pv if '://' in pv else f'{scheme}://{pv}', 'https': pv if '://' in pv else f'{scheme}://{pv}'}
     return None
-
-# ============================================
-# INITIALIZE AI ASSISTANT
-# ============================================
-
-ai_assistant = TripleAI()
-if ai_assistant.enabled:
-    logger.info(f"🤖 AI Support initialized: {ai_assistant.get_status()}")
-else:
-    logger.info("🤖 AI Support disabled (install: pip install google-generativeai)")
 
 load_settings()
 
@@ -2213,12 +1756,6 @@ def get_main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🧪 Advanced", callback_data="submenu_advanced")
         ],
         
-        # AI ASSISTANT
-        [InlineKeyboardButton("🤖 AI ASSISTANT", callback_data="noop")],
-        [
-            InlineKeyboardButton("💬 Ask AI", callback_data="ai_menu")
-        ],
-        
         # SETTINGS
         [InlineKeyboardButton("⚙️ SETTINGS", callback_data="noop")],
         [
@@ -2230,22 +1767,6 @@ def get_main_menu() -> InlineKeyboardMarkup:
 def get_back_button() -> InlineKeyboardMarkup:
     """Create back button"""
     keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_ai_menu() -> InlineKeyboardMarkup:
-    """AI Assistant submenu"""
-    status = ai_assistant.get_status()
-    keyboard = [
-        [InlineKeyboardButton(f"📍 AI ({status})", callback_data="noop")],
-        [
-            InlineKeyboardButton("💬 Ask Question", callback_data="ai_ask"),
-            InlineKeyboardButton("🔍 Analyze File", callback_data="ai_analyze")
-        ],
-        [
-            InlineKeyboardButton("📖 Explain Combo", callback_data="ai_explain_menu")
-        ],
-        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
-    ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_converters_menu() -> InlineKeyboardMarkup:
@@ -2342,98 +1863,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔥 <b>REDLINE V15.0</b>\n"
         "Use the menu buttons to run tools.\n"
         "Upload files in the channel to start batch flows."
-    )
-
-# ============================================
-# AI COMMAND HANDLERS
-# ============================================
-
-async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """AI chat command: /ai <your question>"""
-    if not allowed_chat(update):
-        return
-    
-    if not context.args:
-        await update.message.reply_html(
-            "🤖 <b>AI Assistant</b>\n\n"
-            "<b>Usage:</b> <code>/ai your question here</code>\n\n"
-            "<b>Examples:</b>\n"
-            "• <code>/ai how do I check M3U links?</code>\n"
-            "• <code>/ai what's the difference between U:P and M:P?</code>\n"
-            "• <code>/ai explain MAC addresses</code>\n\n"
-            "💡 Ask me anything about IPTV, combos, or bot features!"
-        )
-        return
-    
-    question = ' '.join(context.args)
-    
-    # Show typing indicator
-    await update.message.chat.send_action(ChatAction.TYPING)
-    
-    # Get AI response
-    answer = await ai_assistant.help_command(question)
-    
-    await update.message.reply_html(
-        f"🤖 <b>AI Assistant:</b>\n\n{answer}"
-    )
-
-async def ai_analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set mode to analyze next file with AI"""
-    if not allowed_chat(update):
-        return
-    
-    if not ai_assistant.enabled:
-        await update.message.reply_html(
-            "❌ <b>AI not available</b>\n\n"
-            "Please install: <code>pip install google-generativeai</code>\n"
-            "And set GEMINI_API_KEY environment variable"
-        )
-        return
-    
-    context.user_data.clear()
-    context.user_data['mode'] = 'ai_analyze'
-    
-    await update.message.reply_html(
-        "🤖 <b>AI File Analyzer</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📤 <b>Send a file to analyze:</b>\n"
-        "• Text files with combos\n"
-        "• M3U playlists\n"
-        "• Log files\n\n"
-        "🧠 AI will provide:\n"
-        "✅ File type & format\n"
-        "✅ Quality assessment\n"
-        "✅ Content summary\n"
-        "✅ Recommendations"
-    )
-
-async def ai_explain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Explain a combo with AI"""
-    if not allowed_chat(update):
-        return
-    
-    if not context.args:
-        await update.message.reply_html(
-            "🤖 <b>AI Combo Explainer</b>\n\n"
-            "<b>Usage:</b> <code>/explain your_combo_here</code>\n\n"
-            "<b>Examples:</b>\n"
-            "• <code>/explain user123:pass456</code>\n"
-            "• <code>/explain http://server.com/get.php?username=test&password=123</code>\n"
-            "• <code>/explain +1234567890:password</code>\n\n"
-            "🧠 AI will explain what it is and how to use it!"
-        )
-        return
-    
-    combo = ' '.join(context.args)
-    
-    # Show typing indicator
-    await update.message.chat.send_action(ChatAction.TYPING)
-    
-    # Get AI explanation
-    explanation = await ai_assistant.explain_combo(combo)
-    
-    await update.message.reply_html(
-        f"🤖 <b>Explanation:</b>\n\n{explanation}"
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2542,66 +1971,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # === AI Assistant Menu ===
-    if data == "ai_menu":
-        status = ai_assistant.get_status()
-        # Prepare status message
-        if ai_assistant.enabled:
-            ai_info = "🤖 Advanced AI Support\n⚡ Real-time analysis\n🎯 Smart recommendations"
-        else:
-            ai_info = "⚠️ AI Support temporarily unavailable. Contact administrator."
-        
-        await query.edit_message_text(
-            f"🤖 <b>AI Assistant</b>\n"
-            f"📊 Status: {status}\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "💡 <b>AI-Powered Features:</b>\n"
-            "• Ask questions\n"
-            "• Analyze files with AI\n"
-            "• Get combo explanations\n"
-            "• Auto-detect file types\n"
-            "• Quality scoring\n\n"
-            f"{ai_info}",
-            parse_mode='HTML',
-            reply_markup=get_ai_menu()
-        )
-        return
-    
-    if data == "ai_ask":
-        await query.edit_message_text(
-            "🤖 <b>Ask AI Assistant</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "💬 <b>Send your question as a message:</b>\n\n"
-            "<b>Examples:</b>\n"
-            "• How do I check M3U links?\n"
-            "• What's the difference between U:P and M:P?\n"
-            "• Explain MAC addresses\n\n"
-            "<i>Or use command:</i> <code>/ai your question</code>",
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-        return
-    
-    if data == "ai_analyze":
-        await ai_analyze_cmd(update, context)
-        return
-    
-    if data == "ai_explain_menu":
-        await query.edit_message_text(
-            "🤖 <b>AI Combo Explainer</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📖 <b>Send a combo to explain:</b>\n\n"
-            "<b>Examples:</b>\n"
-            "• user123:pass456\n"
-            "• http://server.com/get.php?username=test\n"
-            "• +1234567890:password\n\n"
-            "<i>Or use command:</i> <code>/explain your_combo</code>",
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-        return
-
-    # === Settings ===
+     # === Settings ===
     if data == "settings":
         context.user_data.clear()
         context.user_data['mode'] = 'settings'
@@ -2694,15 +2064,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "whois_lookup":
         context.user_data.clear()
         context.user_data['mode'] = 'whois_lookup'
-        ai_status = "✅ Enabled" if ai_assistant.enabled else "❌ Disabled"
         await query.edit_message_text(
-            f"<b>🌐 WHOIS Lookup + AI Trust Analysis</b>\n"
+            f"<b>🌐 WHOIS Lookup</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🤖 AI Trust Scoring: {ai_status}\n\n"
             f"📝 Send IP or domain:\n"
             f"• <code>8.8.8.8</code> (IP)\n"
             f"• <code>example.com</code> (Domain)\n\n"
-            f"💡 AI will analyze trust, age, location & more!",
+            f"💡 Get domain info, age, location & more!",
             parse_mode='HTML',
             reply_markup=get_back_button()
         )
@@ -3103,45 +2471,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_html("⏳ <b>Running WHOIS...</b>")
         tgt, report = WHOISLookup.whois_report(target)
         
-        # === AI TRUST ANALYSIS ===
-        ai_analysis = ""
-        if ai_assistant.enabled:
-            await status_msg.edit_text(
-                "⏳ <b>Running WHOIS...</b>\n"
-                "🤖 AI analyzing domain trust...",
-                parse_mode='HTML'
-            )
-            try:
-                ai_result = await ai_assistant.analyze_whois(report, tgt)
-                if ai_result:
-                    ai_analysis = f"\n\n{ai_result}"
-            except Exception:
-                pass
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         result_filename = f"WHOIS_{timestamp}.txt"
         result_path = os.path.join(TEMP_DIR, result_filename)
         with open(result_path, 'w', encoding='utf-8') as f:
             f.write(report + "\n")
-            # Append AI analysis to file if available
-            if ai_analysis:
-                f.write("\n" + "="*60 + "\n")
-                f.write(ai_analysis.replace("🤖 AI Trust Analysis:\n", "🤖 AI TRUST ANALYSIS\n"))
-                f.write("\n" + "="*60 + "\n")
         
-        # Build caption with AI insights
         caption = (
             f"✅ <b>WHOIS Complete</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🎯 Target: <code>{tgt}</code>"
         )
-        
-        # Add AI analysis if available (max 200 chars for caption)
-        if ai_analysis and len(ai_analysis) < 800:
-            caption += ai_analysis
-        elif ai_analysis:
-            # Too long, show preview
-            caption += "\n\n🤖 AI analysis in file"
         
         with open(result_path, 'rb') as f:
             await update.message.reply_document(
@@ -3420,43 +2760,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Read file content (memory-safe)
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             text = f.read()
-        
-        # === HANDLE AI FILE ANALYSIS ===
-        if mode == 'ai_analyze':
-            if not ai_assistant.enabled:
-                await status_msg.edit_text(
-                    "❌ <b>AI not available</b>\n\n"
-                    "Set GEMINI_API_KEY environment variable to enable AI features.",
-                    parse_mode='HTML'
-                )
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            
-            await status_msg.edit_text(
-                "🤖 <b>AI is analyzing your file...</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🧠 This may take a few seconds...",
-                parse_mode='HTML'
-            )
-            
-            # Get AI analysis
-            analysis = await ai_assistant.analyze_file(text, "combo file")
-            
-            # Send analysis result
-            await update.message.reply_html(
-                f"🤖 <b>AI Analysis Results:</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"{analysis}\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 File: {line_count} lines",
-                reply_markup=get_main_menu()
-            )
-            
-            await status_msg.delete()
-            os.remove(file_path)
-            context.user_data.clear()
-            return
         
         # === HANDLE U:P XTREAM AUTO (batch) ===
         if mode == 'up_xtream_auto' and context.user_data.get('step') == 'await_file':
@@ -4005,20 +3308,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Update status for regular extractions
-        # === AI AUTO-DETECTION (CACHED - uses only 500 chars) ===
-        ai_detected = ""
-        if ai_assistant.enabled:
-            try:
-                detection = await ai_assistant.detect_file_type(text)
-                if detection.get('confidence', 0) >= 60:
-                    detected_type = detection.get('type', '')
-                    ai_detected = f"\n🤖 AI detected: {detected_type.upper()}"
-            except Exception:
-                pass
-        
         await status_msg.edit_text(
             f"⏳ <b>Processing...</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━{ai_detected}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🔍 Extracting data...",
             parse_mode='HTML'
         )
@@ -4074,26 +3366,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f.write("#" + "="*50 + "\n\n")
             f.write('\n'.join(sorted(results)))
         
-        # === AI ENHANCEMENTS (CACHED - won't overload API) ===
-        ai_caption_extra = ""
-        
-        # Quality scoring (only for single types, not ALL)
-        if mode != 'all' and ai_assistant.enabled and len(results) > 0:
-            try:
-                results_list = list(results)[:5]  # Only sample 5
-                quality = await ai_assistant.score_quality(results_list)
-                if quality.get('overall', 0) > 0:
-                    score = quality['overall']
-                    emoji = "🟢" if score >= 70 else "🟡" if score >= 40 else "🔴"
-                    ai_caption_extra += f"\n{emoji} AI Quality: {score}/100"
-                    if quality.get('advice'):
-                        ai_caption_extra += f"\n💡 {quality['advice']}"
-            except Exception:
-                pass
-        
-        # Smart recommendation
-        recommendation = await ai_assistant.recommend_action(mode, len(results))
-        
         # Send result file
         with open(result_path, 'rb') as f:
             await update.message.reply_document(
@@ -4105,8 +3377,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📊 Type: {result_type}\n"
                     f"🎯 Results: {len(results):,}\n"
                     f"📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                    f"{ai_caption_extra}\n\n"
-                    f"{recommendation if len(recommendation) < 200 else '✨ Ready to use!'}"
                 ),
                 parse_mode='HTML',
                 reply_markup=get_main_menu()
@@ -4402,10 +3672,6 @@ def main():
     application.add_handler(CommandHandler("redline", start))
     application.add_handler(CommandHandler("health", health_cmd))
     application.add_handler(CommandHandler("help", help_cmd))
-    # AI command handlers
-    application.add_handler(CommandHandler("ai", ai_chat))
-    application.add_handler(CommandHandler("analyze", ai_analyze_cmd))
-    application.add_handler(CommandHandler("explain", ai_explain_cmd))
     application.add_handler(CallbackQueryHandler(button_callback))
     # Private/group messages (we guard inside)
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
