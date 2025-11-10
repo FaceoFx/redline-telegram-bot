@@ -65,15 +65,10 @@ class GeminiAI:
         if HAS_GEMINI and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
-                # Use gemini-pro - the stable free model
                 self.model = genai.GenerativeModel('gemini-pro')
                 self.enabled = True
-            except Exception as e:
+            except Exception:
                 self.enabled = False
-        elif not HAS_GEMINI:
-            self.enabled = False
-        else:
-            self.enabled = False
     
     async def chat(self, question: str, context: str = "") -> str:
         """Chat with AI assistant"""
