@@ -1739,9 +1739,6 @@ def get_main_menu() -> InlineKeyboardMarkup:
         # M3U TOOLS
         [InlineKeyboardButton("🔧 M3U TOOLS", callback_data="noop")],
         [
-            InlineKeyboardButton("✅ Check Links", callback_data="check_m3u")
-        ],
-        [
             InlineKeyboardButton("📊 M3U→Combo", callback_data="m3u_to_combo"),
             InlineKeyboardButton("📊 Combo→M3U", callback_data="combo_to_m3u")
         ],
@@ -1945,7 +1942,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['mode'] = 'up_xtream_auto'
         context.user_data['step'] = 'ask_host'
         await query.edit_message_text(
-            "<b>⚡ User:Pass Xtream Scanner (Auto)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "<b>⚡ User:Pass Xtream Auto</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
             parse_mode='HTML',
             reply_markup=get_back_button()
