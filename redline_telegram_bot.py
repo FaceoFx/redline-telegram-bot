@@ -2541,6 +2541,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # === AI Assistant Menu ===
     if data == "ai_menu":
         status = ai_assistant.get_status()
+        # Prepare status message
+        if ai_assistant.enabled:
+            ai_info = "🤖 Advanced AI Support\n⚡ Real-time analysis\n🎯 Smart recommendations"
+        else:
+            ai_info = "⚠️ AI Support temporarily unavailable. Contact administrator."
+        
         await query.edit_message_text(
             f"🤖 <b>AI Assistant</b>\n"
             f"📊 Status: {status}\n"
@@ -2551,7 +2557,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Get combo explanations\n"
             "• Auto-detect file types\n"
             "• Quality scoring\n\n"
-            f"{'🤖 Advanced AI Support\n⚡ Real-time analysis\n🎯 Smart recommendations' if ai_assistant.enabled else '⚠️ AI Support temporarily unavailable. Contact administrator.'}",
+            f"{ai_info}",
             parse_mode='HTML',
             reply_markup=get_ai_menu()
         )
