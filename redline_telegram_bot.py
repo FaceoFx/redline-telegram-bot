@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 REDLINE V15.0 ENHANCED Telegram Bot
@@ -38,7 +37,147 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
-    logger.warning("requests not installed - M3U checker disabled")
+
+# ============================================
+# HELPER UTILITIES (Progress Tracking & Caching)
+# ============================================
+
+class ProgressTracker:
+    """Real-time progress updates for long operations"""
+    
+    def __init__(self, message, total: int, operation: str = "Processing"):
+        self.message = message
+        self.total = total
+        self.current = 0
+        self.operation = operation
+        self.last_update = 0
+        self.update_interval = 2.0  # Update every 2 seconds
+        self.start_time = time.time()
+        
+    async def update(self, current: int, force: bool = False):
+        """Update progress (throttled to avoid API rate limits)"""
+        self.current = current
+        now = time.time()
+        
+        # Only update if enough time passed or forced
+        if not force and (now - self.last_update) < self.update_interval:
+            return
+            
+        self.last_update = now
+        percent = (current / self.total) * 100 if self.total > 0 else 0
+        
+        # Progress bar (20 chars)
+        filled = int(percent / 5)
+        bar = '█' * filled + '░' * (20 - filled)
+        
+        # ETA calculation
+        elapsed = now - self.start_time
+        if current > 0:
+            rate = current / elapsed
+            remaining = (self.total - current) / rate if rate > 0 else 0
+            eta = f"{int(remaining)}s" if remaining < 60 else f"{int(remaining/60)}m"
+        else:
+            eta = "calculating..."
+        
+        try:
+            await self.message.edit_text(
+                f"⏳ <b>{self.operation}</b>\n\n"
+                f"[{bar}] {percent:.1f}%\n\n"
+                f"📊 {current:,} / {self.total:,} items\n"
+                f"⏱️ ETA: {eta}",
+                parse_mode='HTML'
+            )
+        except Exception:
+            # Ignore rate limit errors on progress updates
+            pass
+    
+    async def complete(self, result_summary: str = ""):
+        """Mark operation as complete"""
+        elapsed = time.time() - self.start_time
+        minutes = int(elapsed / 60)
+        seconds = int(elapsed % 60)
+        time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+        
+        try:
+            await self.message.edit_text(
+                f"✅ <b>{self.operation} Complete!</b>\n\n"
+                f"📊 Processed: {self.total:,} items\n"
+                f"⏱️ Time: {time_str}\n"
+                f"{result_summary}",
+                parse_mode='HTML'
+            )
+        except Exception:
+            pass
+
+
+class SimpleCache:
+    """Simple in-memory cache with TTL"""
+    
+    def __init__(self, ttl: int = 3600):
+        self.cache = {}
+        self.ttl = ttl
+    
+    def get(self, key: str):
+        """Get cached value if not expired"""
+        if key in self.cache:
+            value, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return value
+            else:
+                del self.cache[key]
+        return None
+    
+    def set(self, key: str, value):
+        """Cache value with current timestamp"""
+        self.cache[key] = (value, time.time())
+    
+    def clear_expired(self):
+        """Remove expired entries"""
+        now = time.time()
+        expired = [k for k, (_, ts) in self.cache.items() if now - ts > self.ttl]
+        for k in expired:
+            del self.cache[k]
+
+
+def format_number(num: int) -> str:
+    """Format large numbers with K/M suffixes"""
+    if num < 1000:
+        return str(num)
+    elif num < 1000000:
+        return f"{num/1000:.1f}K"
+    else:
+        return f"{num/1000000:.1f}M"
+
+
+def format_file_size(size_bytes: int) -> str:
+    """Format bytes to human-readable size"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f}{unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f}TB"
+
+
+def count_lines_efficient(file_path: str, max_lines: int = None) -> int:
+    """Count lines in file efficiently without loading into memory"""
+    count = 0
+    with open(file_path, 'rb') as f:
+        for _ in f:
+            count += 1
+            if max_lines and count > max_lines:
+                return count
+    return count
+
+
+def read_file_chunked(file_path: str, max_lines: int = None):
+    """Generator to read large files line by line (memory efficient)"""
+    count = 0
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            if max_lines and count >= max_lines:
+                break
+            yield line
+            count += 1
 
 # ============================================
 # BOT CONFIGURATION
@@ -56,12 +195,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress verbose httpx logs
+logging.getLogger('httpx').setLevel(logging.WARNING)
+
 # Temp directory for file processing
 TEMP_DIR = 'bot_temp'
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# File size limit (50MB)
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB in bytes
+# File size limits (Koyeb-optimized)
+MAX_FILE_SIZE = int(os.environ.get('MAX_FILE_SIZE', 50 * 1024 * 1024))  # 50MB default
+MAX_LINES = int(os.environ.get('MAX_LINES', 500000))  # 500K lines max
+MAX_MEMORY_MB = int(os.environ.get('MAX_MEMORY_MB', 300))  # 300MB RAM limit
+
+# Performance settings
+MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '8'))  # Reduced for Koyeb
+PROCESSING_TIMEOUT = 300  # 5 minutes max per operation
+
+# Initialize global cache (1 hour TTL)
+m3u_cache = SimpleCache(ttl=3600)
+result_cache = SimpleCache(ttl=1800)  # 30 min for results
 
 # Proxy configuration (optional)
 # Set to None to disable proxy, or provide proxy dict
@@ -203,7 +355,10 @@ def allowed_chat(update: Update) -> bool:
 # ============================================
 
 _rate_state: Dict[int, Tuple[float, float]] = {}
+_rate_warnings: Dict[int, float] = {}
+
 def _allow_rate(chat_id: int, rate: float = 1.0, burst: int = 3) -> bool:
+    """Token bucket rate limiter with user warning"""
     now = time.time()
     last, tokens = _rate_state.get(chat_id, (now, float(burst)))
     tokens = min(burst, tokens + (now - last) * rate)
@@ -212,6 +367,22 @@ def _allow_rate(chat_id: int, rate: float = 1.0, burst: int = 3) -> bool:
         return True
     _rate_state[chat_id] = (now, tokens)
     return False
+
+async def send_rate_limit_warning(update: Update):
+    """Send one-time rate limit warning per user"""
+    chat_id = update.effective_chat.id
+    now = time.time()
+    last_warn = _rate_warnings.get(chat_id, 0)
+    if now - last_warn > 60:  # Once per minute
+        _rate_warnings[chat_id] = now
+        try:
+            await update.message.reply_text(
+                "⏱️ <b>Slow down!</b>\n\n"
+                "Please wait a moment before sending more requests.",
+                parse_mode='HTML'
+            )
+        except Exception:
+            pass
 
 # ============================================
 # REDLINE V15.0 EXTRACTION ENGINE
@@ -307,6 +478,36 @@ class M3UChecker:
                     results['alive'].append((url, status))
                 else:
                     results['dead'].append((url, status))
+        
+        return results
+    
+    @staticmethod
+    async def check_links_batch_async(links: List[str], max_workers: int = 20, proxies: dict = None, progress_callback=None) -> Dict:
+        """Check multiple links in parallel with async progress tracking"""
+        results = {'alive': [], 'dead': []}
+        processed = 0
+        
+        def check_with_progress(link):
+            result = M3UChecker.check_single_link(link, 5, proxies)
+            return result
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(check_with_progress, link): link for link in links}
+            
+            for future in as_completed(futures):
+                url, is_alive, status = future.result()
+                if is_alive:
+                    results['alive'].append((url, status))
+                else:
+                    results['dead'].append((url, status))
+                
+                processed += 1
+                if progress_callback and processed % 5 == 0:  # Update every 5 links
+                    await progress_callback(processed)
+        
+        # Final update
+        if progress_callback:
+            await progress_callback(len(links))
         
         return results
 
@@ -2267,9 +2468,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if file_size > MAX_FILE_SIZE:
         await update.message.reply_text(
             f"❌ <b>File too large!</b>\n\n"
-            f"Maximum size: {MAX_FILE_SIZE // (1024*1024)}MB\n"
-            f"Your file: {file_size // (1024*1024)}MB\n\n"
-            f"Please split the file and try again.",
+            f"📊 <b>Limits:</b>\n"
+            f"• Max file size: <code>{format_file_size(MAX_FILE_SIZE)}</code>\n"
+            f"• Max lines: <code>{format_number(MAX_LINES)}</code>\n\n"
+            f"📁 <b>Your file:</b> <code>{format_file_size(file_size)}</code>\n\n"
+            f"💡 <b>Tips:</b>\n"
+            f"• Split large files into smaller chunks\n"
+            f"• Remove duplicate lines first\n"
+            f"• Use compression (gzip) if possible\n\n"
+            f"<i>Limits protect server resources on Koyeb</i>",
             parse_mode='HTML'
         )
         return
@@ -2288,15 +2495,34 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = os.path.join(TEMP_DIR, f"{update.effective_user.id}_{file.file_id}.txt")
         await file.download_to_drive(file_path)
         
+        # Check line count (memory protection)
+        line_count = count_lines_efficient(file_path, MAX_LINES + 1)
+        if line_count > MAX_LINES:
+            await status_msg.edit_text(
+                f"❌ <b>Too many lines!</b>\n\n"
+                f"📊 <b>Limits:</b>\n"
+                f"• Max lines: <code>{format_number(MAX_LINES)}</code>\n"
+                f"• Your file: <code>{format_number(line_count)}+</code>\n\n"
+                f"💡 <b>Solution:</b>\n"
+                f"• Split file into {(line_count // MAX_LINES) + 1} parts\n"
+                f"• Remove empty lines\n"
+                f"• Process in batches\n\n"
+                f"<i>This protects against memory exhaustion</i>",
+                parse_mode='HTML'
+            )
+            os.remove(file_path)
+            context.user_data.clear()
+            return
+        
         # Update status
         await status_msg.edit_text(
-            "⏳ <b>Processing...</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📄 Reading file...",
+            f"⏳ <b>Processing...</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📄 Reading {format_number(line_count)} lines...",
             parse_mode='HTML'
         )
         
-        # Read file content
+        # Read file content (memory-safe)
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             text = f.read()
         
@@ -2328,6 +2554,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             found = 0
             total = len(combos)
             blocks: List[str] = []
+            
+            # Initialize ProgressTracker
+            progress = ProgressTracker(status_msg, total, "Probing Xtream Accounts")
+            
             # show typing while processing
             try:
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -2348,16 +2578,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 pass
                         blocks.append(M3UProbe.format_auto_block(info))
                         found += 1
-                    if done % 25 == 0 or done == total:
-                        try:
-                            await status_msg.edit_text(
-                                f"⏳ <b>Probing Xtream Accounts...</b>\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                f"Processed: {done}/{total} • Valid: {found}",
-                                parse_mode='HTML'
-                            )
-                        except Exception:
-                            pass
+                    
+                    # Update progress
+                    if done % 10 == 0 or done == total:
+                        await progress.update(done)
+            
+            # Complete progress
+            await progress.complete(f"\n✅ Valid: {found}/{total}")
+            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             result_filename = f"UP_XTREAM_INFO_{timestamp}.txt"
             result_path = os.path.join(TEMP_DIR, result_filename)
@@ -2387,9 +2615,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # === HANDLE M3U LINK CHECKER (AUTO, REDLINE info) ===
         if mode == 'check_m3u':
             await status_msg.edit_text(
-                "⏳ <b>Probing M3U Accounts...</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🔍 player_api.php",
+                "⏳ <b>Starting M3U Probe...</b>",
                 parse_mode='HTML'
             )
             links = [line.strip() for line in text.split('\n') if line.strip().startswith(('http://','https://'))]
@@ -2406,6 +2632,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             found = 0
             total = len(links)
             blocks: List[str] = []
+            
+            # Initialize ProgressTracker
+            progress = ProgressTracker(status_msg, total, "Probing M3U Links")
+            
             # show typing while processing
             try:
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -2426,16 +2656,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 pass
                         blocks.append(M3UProbe.format_auto_block(info))
                         found += 1
-                    if done % 50 == 0 or done == total:
-                        try:
-                            await status_msg.edit_text(
-                                f"⏳ <b>Probing M3U Accounts...</b>\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                f"Processed: {done}/{total} • Valid: {found}",
-                                parse_mode='HTML'
-                            )
-                        except Exception:
-                            pass
+                    
+                    # Update progress
+                    if done % 10 == 0 or done == total:
+                        await progress.update(done)
+            
+            # Complete progress
+            await progress.complete(f"\n✅ Valid: {found}/{total}")
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             result_filename = f"M3U_INFO_{timestamp}.txt"
             result_path = os.path.join(TEMP_DIR, result_filename)
@@ -2873,6 +3100,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             pass
         return
     if update.effective_chat and not _allow_rate(update.effective_chat.id):
+        await send_rate_limit_warning(update)
         return
     mode = context.user_data.get('mode')
     # Support /redline in channels or allowed private
@@ -3065,12 +3293,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.clear()
         return
 
-    # Fallback
-    await update.message.reply_text(
-        "ℹ️ <b>Unknown command</b>\n\n"
-        "Use /redline to show menu",
-        parse_mode='HTML'
-    )
+    # No mode set - ignore message (don't spam users)
+    # Bot only responds when user explicitly uses /redline or during active mode
+    return
 
 # ============================================
 # MAIN - START BOT
@@ -3125,6 +3350,10 @@ def main():
                         os.remove(p)
                 except Exception:
                     continue
+            
+            # Clean expired cache entries
+            m3u_cache.clear_expired()
+            result_cache.clear_expired()
         except Exception:
             pass
 
@@ -3135,6 +3364,8 @@ def main():
         logger.warning("No channels configured. Set CHANNEL_IDS or CHANNEL_ID env vars.")
     logger.info("✅ Bot is running! Press Ctrl+C to stop.")
     logger.info(f"📱 Channels: {sorted(list(ALLOWED_CHANNEL_IDS))}")
+    logger.info("🚀 Progress tracking & caching enabled")
+    logger.info(f"📊 Resource limits: {format_file_size(MAX_FILE_SIZE)} / {format_number(MAX_LINES)} lines / {MAX_WORKERS} workers")
     
     # Run bot with retry on conflict
     logger.info("🚀 Starting polling loop...")
