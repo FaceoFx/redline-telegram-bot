@@ -65,7 +65,7 @@ class GeminiAI:
         if HAS_GEMINI and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
+                self.model = genai.GenerativeModel('gemini-pro')
                 self.enabled = True
             except Exception as e:
                 self.enabled = False
