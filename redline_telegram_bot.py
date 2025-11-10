@@ -1941,11 +1941,19 @@ def _start_keepalive_ping(port: int):
 # GLOBAL ERROR HANDLER
 # ============================================
 
+# Conflict counter to reduce log spam
+_conflict_count = 0
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _conflict_count
     err = context.error
     # Ignore duplicate polling conflicts during rolling deploys
     if isinstance(err, telegram.error.Conflict):
-        logger.warning("⚠️ Conflict detected: another bot instance polling. This is normal during Koyeb restarts.")
+        _conflict_count += 1
+        if _conflict_count <= 3:
+            logger.warning("⚠️ Conflict detected: another bot instance polling. This is normal during Koyeb restarts.")
+        elif _conflict_count == 4:
+            logger.info("ℹ️ Conflict warnings suppressed (old instance shutting down...)")
         return
     # Ignore network timeout errors (will retry automatically)
     if isinstance(err, (telegram.error.NetworkError, telegram.error.TimedOut)):
