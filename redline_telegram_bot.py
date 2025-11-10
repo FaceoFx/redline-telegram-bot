@@ -4431,7 +4431,11 @@ def main():
         except Exception:
             pass
 
-    application.job_queue.run_repeating(_cleanup_temp_cb, interval=600, first=120)
+    # Schedule cleanup job if JobQueue is available
+    if application.job_queue:
+        application.job_queue.run_repeating(_cleanup_temp_cb, interval=600, first=120)
+    else:
+        logger.warning("⚠️ JobQueue not available. Cleanup tasks disabled.")
     
     # Start bot
     if not ALLOWED_CHANNEL_IDS:
