@@ -642,22 +642,10 @@ class M3UProbe:
         lines.append(f"\u25cf\u25ba M3U: {info.get('m3u','-')}")
         lines.append("----------------------------")
         return "\n".join(lines)
-
-class UpProbe:
-    @staticmethod
-    def build_m3u(host: str, username: str, password: str) -> str:
-        if not host.startswith(('http://','https://')):
-            host = 'http://' + host
-        base = host.rstrip('/')
-        return f"{base}/get.php?username={username}&password={password}&type=m3u_plus"
-
-    @staticmethod
-    def probe_up(host: str, username: str, password: str, timeout: int = 8, proxies: dict | None = None) -> Tuple[bool, Dict, str]:
-        url = UpProbe.build_m3u(host, username, password)
-        return M3UProbe.probe(url, timeout=timeout, proxies=proxies)
-
+    
     @staticmethod
     def format_auto_block(info: Dict) -> str:
+        """Format info for auto batch processing"""
         lines = []
         lines.append("----------------------------")
         lines.append(f" Timezone: {info.get('timezone','-')}")
@@ -674,6 +662,86 @@ class UpProbe:
             lines.append(f" Content Channels: {info.get('channels')}")
         lines.append(f" M3U: {info.get('m3u','-')}")
         lines.append(f" API: {info.get('api','-')}")
+        return "\n".join(lines)
+
+class UpProbe:
+    @staticmethod
+    def build_m3u(host: str, username: str, password: str) -> str:
+        if not host.startswith(('http://','https://')):
+            host = 'http://' + host
+        base = host.rstrip('/')
+        return f"{base}/get.php?username={username}&password={password}&type=m3u_plus"
+
+    @staticmethod
+    def probe_up(host: str, username: str, password: str, timeout: int = 8, proxies: dict | None = None) -> Tuple[bool, Dict, str]:
+        url = UpProbe.build_m3u(host, username, password)
+        return M3UProbe.probe(url, timeout=timeout, proxies=proxies)
+
+class MACProbe:
+    """MAC address IPTV portal probe (Stalker/MAG portals)"""
+    
+    @staticmethod
+    def probe_mac(host: str, mac: str, timeout: int = 8, proxies: dict | None = None) -> Tuple[bool, Dict, str]:
+        """Probe IPTV host with MAC address"""
+        if not HAS_REQUESTS:
+            return False, {}, "requests not installed"
+        
+        try:
+            # Normalize host
+            if not host.startswith(('http://', 'https://')):
+                host = 'http://' + host
+            base = host.rstrip('/')
+            
+            # Common MAC portal endpoints (Stalker/MAG portals)
+            endpoints = [
+                f"{base}/stalker_portal/server/load.php?type=stb&action=handshake&token=&mac={mac}",
+                f"{base}/portal.php?type=stb&action=handshake&token=&mac={mac}",
+                f"{base}/c/index.php?mac={mac}",
+                f"{base}/server/load.php?type=stb&action=handshake&mac={mac}",
+                f"{base}/api/v2/auth?mac={mac}",
+            ]
+            
+            for endpoint in endpoints:
+                try:
+                    r = Net.get(
+                        endpoint, 
+                        timeout=timeout, 
+                        proxies=proxies,
+                        headers={"User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C)"}
+                    )
+                    
+                    if r.status_code == 200:
+                        content = r.text.lower()
+                        # Check for valid portal response
+                        if any(word in content for word in ['token', 'handshake', 'js', 'profile', 'cmd', 'expires']):
+                            info = {
+                                'mac': mac,
+                                'host': host,
+                                'endpoint': endpoint.split('?')[0],  # Clean endpoint
+                                'status': 'Active',
+                                'response_size': len(r.text)
+                            }
+                            return True, info, ''
+                except Exception:
+                    continue
+            
+            return False, {}, "MAC portal not found or inactive"
+            
+        except Exception as e:
+            return False, {}, f"Error: {str(e)}"
+    
+    @staticmethod
+    def format_mac_result(info: Dict) -> str:
+        """Format MAC probe result"""
+        lines = [
+            "----------------------------",
+            f"●► MAC: {info.get('mac', '-')}",
+            f"●► Host: {info.get('host', '-')}",
+            f"●► Endpoint: {info.get('endpoint', '-')}",
+            f"●► Status: {info.get('status', '-')}",
+            f"●► Response Size: {info.get('response_size', 0)} bytes",
+            "----------------------------"
+        ]
         return "\n".join(lines)
 
 # ============================================
@@ -1641,62 +1709,43 @@ class RedlineExtractor:
 # ============================================
 
 def get_main_menu() -> InlineKeyboardMarkup:
-    """Create main menu keyboard - ALL ENGLISH"""
+    """Create main menu keyboard - Modernized UI"""
     keyboard = [
-        [InlineKeyboardButton("═══ 📊 EXTRACTION ═══", callback_data="noop")],
+        # EXTRACTION - Primary Feature
+        [InlineKeyboardButton("📦 EXTRACTION", callback_data="noop")],
         [
-            InlineKeyboardButton("📱 N:P", callback_data="mode_np"),
-            InlineKeyboardButton("👤 U:P", callback_data="mode_up"),
-            InlineKeyboardButton("📧 M:P", callback_data="mode_mp")
+            InlineKeyboardButton("💬 N:P", callback_data="mode_np"),
+            InlineKeyboardButton("🔐 U:P", callback_data="mode_up")
         ],
         [
-            InlineKeyboardButton("🔗 M3U", callback_data="mode_m3u"),
+            InlineKeyboardButton("📧 M:P", callback_data="mode_mp"),
+            InlineKeyboardButton("📺 M3U", callback_data="mode_m3u")
+        ],
+        [
             InlineKeyboardButton("🔑 MAC", callback_data="mode_mac"),
-            InlineKeyboardButton("⭐ ALL", callback_data="mode_all")
+            InlineKeyboardButton("🎯 ALL", callback_data="mode_all")
         ],
-        [InlineKeyboardButton("═══ 🔗 M3U TOOLS ═══", callback_data="noop")],
+        
+        # QUICK ACTIONS - Fast Workflow
+        [InlineKeyboardButton("⚡ QUICK ACTIONS", callback_data="noop")],
         [
-            InlineKeyboardButton("✅ Check Links", callback_data="check_m3u")
+            InlineKeyboardButton("🚀 Auto Check M3U", callback_data="check_m3u"),
+            InlineKeyboardButton("⚡ Quick U:P Check", callback_data="up_xtream_auto")
         ],
+        
+        # TOOLS - Converters & Utilities
+        [InlineKeyboardButton("🛠️ TOOLS & CONVERTERS", callback_data="noop")],
         [
-            InlineKeyboardButton("🔄 M3U→Combo", callback_data="m3u_to_combo"),
-            InlineKeyboardButton("🔄 Combo→M3U", callback_data="combo_to_m3u")
-        ],
-        [
-            InlineKeyboardButton("🔀 M3U→MAC", callback_data="m3u_to_mac"),
-            InlineKeyboardButton("↩️ MAC→M3U", callback_data="mac_to_m3u")
-        ],
-        [InlineKeyboardButton("═══ 🛠 PANEL TOOLS ═══", callback_data="noop")],
-        [
-            InlineKeyboardButton("🗂️ Panel Searcher", callback_data="panel_searcher"),
-            InlineKeyboardButton("🟢 Check Live Panels", callback_data="check_panels")
-        ],
-        [InlineKeyboardButton("═══ ⚡ CHECKERS ═══", callback_data="noop")],
-        [
-            InlineKeyboardButton("⚡ U:P Xtream (1)", callback_data="up_xtream_single"),
-            InlineKeyboardButton("🔍 M3U Manual (1)", callback_data="m3u_manual")
+            InlineKeyboardButton("🔄 M3U ⇄ Combo", callback_data="submenu_converters"),
+            InlineKeyboardButton("🔀 MAC Tools", callback_data="submenu_mac")
         ],
         [
-            InlineKeyboardButton("⚡ U:P Xtream (Auto)", callback_data="up_xtream_auto")
+            InlineKeyboardButton("🔎 Search & Finder", callback_data="submenu_search"),
+            InlineKeyboardButton("🧪 Advanced", callback_data="submenu_advanced")
         ],
-        [
-            InlineKeyboardButton("📱 MAC Host (1)", callback_data="mac_host_single"),
-            InlineKeyboardButton("🧪 Combo Generator", callback_data="combo_generator")
-        ],
-        [InlineKeyboardButton("═══ 🧰 TOOLS ═══", callback_data="noop")],
-        [
-            InlineKeyboardButton("🔎 Keyword Searcher", callback_data="keyword_searcher"),
-            InlineKeyboardButton("🗝️ StreamCreed", callback_data="streamcreed_finder")
-        ],
-        [
-            InlineKeyboardButton("🌐 WHOIS", callback_data="whois_lookup"),
-            InlineKeyboardButton("🌐 Proxy Finder", callback_data="proxy_finder")
-        ],
-        [InlineKeyboardButton("═══ ℹ️ INFO ═══", callback_data="noop")],
-        [
-            InlineKeyboardButton("❓ Help", callback_data="help"),
-            InlineKeyboardButton("📊 Stats", callback_data="stats")
-        ],
+        
+        # SETTINGS
+        [InlineKeyboardButton("⚙️ SETTINGS", callback_data="noop")],
         [
             InlineKeyboardButton("⚙️ Settings", callback_data="settings")
         ]
@@ -1706,6 +1755,75 @@ def get_main_menu() -> InlineKeyboardMarkup:
 def get_back_button() -> InlineKeyboardMarkup:
     """Create back button"""
     keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_converters_menu() -> InlineKeyboardMarkup:
+    """M3U Converters submenu"""
+    keyboard = [
+        [InlineKeyboardButton("📍 Converters & Tools", callback_data="noop")],
+        [
+            InlineKeyboardButton("🔄 M3U → Combo", callback_data="m3u_to_combo"),
+            InlineKeyboardButton("🔄 Combo → M3U", callback_data="combo_to_m3u")
+        ],
+        [
+            InlineKeyboardButton("🔀 M3U → MAC", callback_data="m3u_to_mac"),
+            InlineKeyboardButton("↩️ MAC → M3U", callback_data="mac_to_m3u")
+        ],
+        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_mac_tools_menu() -> InlineKeyboardMarkup:
+    """MAC Tools submenu"""
+    keyboard = [
+        [InlineKeyboardButton("📍 MAC Address Tools", callback_data="noop")],
+        [
+            InlineKeyboardButton("🔑 MAC Host Check", callback_data="mac_host_single")
+        ],
+        [
+            InlineKeyboardButton("🔀 M3U → MAC", callback_data="m3u_to_mac"),
+            InlineKeyboardButton("↩️ MAC → M3U", callback_data="mac_to_m3u")
+        ],
+        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_search_menu() -> InlineKeyboardMarkup:
+    """Search & Finder tools submenu"""
+    keyboard = [
+        [InlineKeyboardButton("📍 Search & Finder Tools", callback_data="noop")],
+        [
+            InlineKeyboardButton("🔎 Keyword Searcher", callback_data="keyword_searcher"),
+            InlineKeyboardButton("🗝️ StreamCreed Finder", callback_data="streamcreed_finder")
+        ],
+        [
+            InlineKeyboardButton("🗂️ Panel Searcher", callback_data="panel_searcher"),
+            InlineKeyboardButton("🌐 Proxy Finder", callback_data="proxy_finder")
+        ],
+        [
+            InlineKeyboardButton("🌐 WHOIS Lookup", callback_data="whois_lookup")
+        ],
+        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_advanced_menu() -> InlineKeyboardMarkup:
+    """Advanced tools submenu"""
+    keyboard = [
+        [InlineKeyboardButton("📍 Advanced Tools", callback_data="noop")],
+        [
+            InlineKeyboardButton("🧪 Combo Generator", callback_data="combo_generator"),
+            InlineKeyboardButton("🟢 Check Live Panels", callback_data="check_panels")
+        ],
+        [
+            InlineKeyboardButton("⚡ U:P Xtream (Single)", callback_data="up_xtream_single"),
+            InlineKeyboardButton("🔍 M3U Manual Check", callback_data="m3u_manual")
+        ],
+        [
+            InlineKeyboardButton("📱 MAC Scanner (Auto)", callback_data="mac_scanner")
+        ],
+        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 # ============================================
@@ -1748,10 +1866,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     welcome_text = (
-        f"👋 Welcome {user.mention_html()}!\n\n"
-        "🔥 <b>REDLINE V15.0</b>\n"
+        f"👋 <b>Welcome {user.first_name}!</b>\n\n"
+        "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Select an option below:"
+        "⚡ <b>Quick Start:</b>\n"
+        "1️⃣ Choose extraction format\n"
+        "2️⃣ Upload your file\n"
+        "3️⃣ Get results instantly!\n\n"
+        "💡 <i>Tip: Try Quick Actions for faster workflow</i>"
     )
     
     await update.effective_message.reply_html(
@@ -1777,13 +1899,59 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Back to main
     if data == "back":
         context.user_data.clear()
+        user = query.from_user
         await query.edit_message_text(
-            "👋 Welcome!\n\n"
-            "🔥 <b>REDLINE V15.0</b>\n"
+            f"👋 <b>Welcome back, {user.first_name}!</b>\n\n"
+            "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Select an option below:",
+            "⚡ <b>Quick Start:</b>\n"
+            "1️⃣ Choose extraction format\n"
+            "2️⃣ Upload your file\n"
+            "3️⃣ Get results instantly!\n\n"
+            "💡 <i>Tip: Try Quick Actions for faster workflow</i>",
             parse_mode='HTML',
             reply_markup=get_main_menu()
+        )
+        return
+    
+    # === Submenus ===
+    if data == "submenu_converters":
+        await query.edit_message_text(
+            "🔄 <b>M3U Converters & Tools</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Convert between different IPTV formats:",
+            parse_mode='HTML',
+            reply_markup=get_converters_menu()
+        )
+        return
+    
+    if data == "submenu_mac":
+        await query.edit_message_text(
+            "🔑 <b>MAC Address Tools</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "MAC-based IPTV tools and converters:",
+            parse_mode='HTML',
+            reply_markup=get_mac_tools_menu()
+        )
+        return
+    
+    if data == "submenu_search":
+        await query.edit_message_text(
+            "🔎 <b>Search & Finder Tools</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Find and search IPTV resources:",
+            parse_mode='HTML',
+            reply_markup=get_search_menu()
+        )
+        return
+    
+    if data == "submenu_advanced":
+        await query.edit_message_text(
+            "🧪 <b>Advanced Tools</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Expert-level IPTV utilities:",
+            parse_mode='HTML',
+            reply_markup=get_advanced_menu()
         )
         return
 
@@ -1853,6 +2021,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "<b>⚡ U:P Xtream Check (Auto)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
+            parse_mode='HTML',
+            reply_markup=get_back_button()
+        )
+        return
+    
+    # === MAC Scanner (batch) ===
+    if data == "mac_scanner":
+        context.user_data.clear()
+        context.user_data['mode'] = 'mac_scanner'
+        context.user_data['step'] = 'ask_host'
+        await query.edit_message_text(
+            "<b>📱 MAC Scanner (Auto)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📝 Send IPTV host (with port)\n"
+            "Example: <code>http://example.com:8080</code>\n\n"
+            "⚡ <b>Features:</b>\n"
+            "• Batch MAC testing\n"
+            "• Auto portal detection\n"
+            "• Progress tracking",
             parse_mode='HTML',
             reply_markup=get_back_button()
         )
@@ -2132,6 +2318,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data.clear()
             return
+    
+    # MAC Scanner (batch) - handle host input
+    if mode == 'mac_scanner' and context.user_data.get('step') == 'ask_host':
+        host = update.message.text.strip()
+        
+        # Validate and normalize host
+        if not host:
+            await update.message.reply_html("❌ <b>Invalid host</b>")
+            return
+        
+        if not host.startswith(('http://', 'https://')):
+            host = 'http://' + host
+        
+        context.user_data['host'] = host.rstrip('/')
+        context.user_data['step'] = 'await_file'
+        await update.message.reply_html(
+            f"✅ <b>Host saved!</b>\n"
+            f"<code>{host}</code>\n\n"
+            f"📤 <b>Now send a file containing:</b>\n"
+            f"• MAC addresses (one per line)\n"
+            f"• Format: <code>00:1A:79:XX:XX:XX</code>\n"
+            f"• Both colon and dash separators supported\n\n"
+            f"⏳ Waiting for file..."
+        )
+        return
 
     # PHASE 3: Combo Generator
     if mode == 'combo_generator':
@@ -2609,6 +2820,108 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.delete()
             os.remove(file_path)
             os.remove(result_path)
+            context.user_data.clear()
+            return
+        
+        # === HANDLE MAC SCANNER (batch) ===
+        if mode == 'mac_scanner' and context.user_data.get('step') == 'await_file':
+            await status_msg.edit_text(
+                "⏳ <b>Scanning MAC Addresses...</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "🔍 Testing portal endpoints...",
+                parse_mode='HTML'
+            )
+            
+            host = context.user_data.get('host') or ''
+            
+            # Extract MAC addresses from file
+            macs_raw = [ln.strip() for ln in text.split('\n') if ln.strip()]
+            macs = []
+            
+            # Validate MAC format (support both colon and dash separators)
+            mac_pattern = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
+            for mac in macs_raw:
+                mac = mac.upper()
+                if mac_pattern.match(mac):
+                    # Normalize to colon separator
+                    mac = mac.replace('-', ':')
+                    macs.append(mac)
+            
+            if not macs:
+                await status_msg.edit_text("❌ <b>No valid MAC addresses found!</b>", parse_mode='HTML')
+                os.remove(file_path)
+                context.user_data.clear()
+                return
+            
+            # Apply limit
+            limit = int(GLOBAL_SETTINGS.get('combo_limit', 500))
+            macs = macs[:limit]
+            workers = int(GLOBAL_SETTINGS.get('workers', 12))
+            
+            done = 0
+            found = 0
+            total = len(macs)
+            blocks: List[str] = []
+            
+            # Initialize ProgressTracker
+            progress = ProgressTracker(status_msg, total, "Scanning MAC Addresses")
+            
+            # Show typing
+            try:
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            except Exception:
+                pass
+            
+            # Probe MACs in parallel
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(MACProbe.probe_mac, host, mac, 8, get_proxies()): mac for mac in macs}
+                for fu in as_completed(futs):
+                    ok, info, err = fu.result()
+                    done += 1
+                    if ok:
+                        blocks.append(MACProbe.format_mac_result(info))
+                        found += 1
+                    
+                    # Update progress
+                    if done % 10 == 0 or done == total:
+                        await progress.update(done)
+            
+            # Complete progress
+            await progress.complete(f"\n✅ Valid: {found}/{total}")
+            
+            # Create result file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result_filename = f"MAC_SCANNER_{timestamp}.txt"
+            result_path = os.path.join(TEMP_DIR, result_filename)
+            
+            with open(result_path, 'w', encoding='utf-8') as f:
+                if blocks:
+                    f.write(f"# MAC Scanner Results\n")
+                    f.write(f"# Host: {host}\n")
+                    f.write(f"# Valid MACs: {found} / {total}\n")
+                    f.write(f"# Scanned: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    f.write("\n".join(blocks) + "\n")
+                else:
+                    f.write("# No valid MAC addresses found\n")
+            
+            # Send result
+            with open(result_path, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=result_filename,
+                    caption=(
+                        f"✅ <b>MAC Scanner Complete</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"🎯 Host: <code>{host}</code>\n"
+                        f"📊 Valid: {found} / {total}"
+                    ),
+                    parse_mode='HTML',
+                    reply_markup=get_main_menu()
+                )
+            
+            await status_msg.delete()
+            os.remove(result_path)
+            os.remove(file_path)
             context.user_data.clear()
             return
         
@@ -3309,7 +3622,15 @@ def main():
     # Uncomment the proxy lines below if you need to use a proxy
     
     # Option 1: Without proxy (normal)
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .get_updates_read_timeout(30)
+        .get_updates_write_timeout(30)
+        .get_updates_connect_timeout(30)
+        .get_updates_pool_timeout(30)
+        .build()
+    )
     
     # Option 2: With HTTP proxy (if Telegram blocked - uncomment these)
     # from telegram.request import HTTPXRequest
@@ -3374,11 +3695,7 @@ def main():
         try:
             application.run_polling(
                 allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                pool_timeout=30,
-                read_timeout=10,
-                write_timeout=10,
-                connect_timeout=10
+                drop_pending_updates=True
             )
             break
         except telegram.error.Conflict as e:
