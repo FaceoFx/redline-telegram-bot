@@ -1721,9 +1721,9 @@ class RedlineExtractor:
 # ============================================
 
 def get_main_menu() -> InlineKeyboardMarkup:
-    """Create main menu keyboard - Modernized UI"""
+    """Create main menu keyboard - Flat structure"""
     keyboard = [
-        # EXTRACTION - Primary Feature
+        # EXTRACTION
         [InlineKeyboardButton("📦 EXTRACTION", callback_data="noop")],
         [
             InlineKeyboardButton("💬 N:P", callback_data="mode_np"),
@@ -1738,22 +1738,22 @@ def get_main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎯 ALL", callback_data="mode_all")
         ],
         
-        # QUICK ACTIONS - Fast Workflow
+        # QUICK ACTIONS
         [InlineKeyboardButton("⚡ QUICK ACTIONS", callback_data="noop")],
         [
             InlineKeyboardButton("🚀 Auto Check M3U", callback_data="check_m3u"),
             InlineKeyboardButton("⚡ Quick U:P Check", callback_data="up_xtream_auto")
         ],
         
-        # TOOLS - Converters & Utilities
+        # TOOLS & CONVERTERS
         [InlineKeyboardButton("🛠️ TOOLS & CONVERTERS", callback_data="noop")],
         [
-            InlineKeyboardButton("🔄 M3U ⇄ Combo", callback_data="submenu_converters"),
-            InlineKeyboardButton("🔀 MAC Tools", callback_data="submenu_mac")
+            InlineKeyboardButton("🔄 M3U ⇄ Combo", callback_data="m3u_to_combo"),
+            InlineKeyboardButton("🔀 MAC Tools", callback_data="mac_to_m3u")
         ],
         [
-            InlineKeyboardButton("🔎 Search & Finder", callback_data="submenu_search"),
-            InlineKeyboardButton("🧪 Advanced", callback_data="submenu_advanced")
+            InlineKeyboardButton("🔎 Search & Finder", callback_data="whois_lookup"),
+            InlineKeyboardButton("🧪 Advanced", callback_data="keyword_searcher")
         ],
         
         # SETTINGS
@@ -1769,74 +1769,6 @@ def get_back_button() -> InlineKeyboardMarkup:
     keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]]
     return InlineKeyboardMarkup(keyboard)
 
-def get_converters_menu() -> InlineKeyboardMarkup:
-    """M3U Converters submenu"""
-    keyboard = [
-        [InlineKeyboardButton("📍 Converters & Tools", callback_data="noop")],
-        [
-            InlineKeyboardButton("🔄 M3U → Combo", callback_data="m3u_to_combo"),
-            InlineKeyboardButton("🔄 Combo → M3U", callback_data="combo_to_m3u")
-        ],
-        [
-            InlineKeyboardButton("🔀 M3U → MAC", callback_data="m3u_to_mac"),
-            InlineKeyboardButton("↩️ MAC → M3U", callback_data="mac_to_m3u")
-        ],
-        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_mac_tools_menu() -> InlineKeyboardMarkup:
-    """MAC Tools submenu"""
-    keyboard = [
-        [InlineKeyboardButton("📍 MAC Address Tools", callback_data="noop")],
-        [
-            InlineKeyboardButton("🔑 MAC Host Check", callback_data="mac_host_single")
-        ],
-        [
-            InlineKeyboardButton("🔀 M3U → MAC", callback_data="m3u_to_mac"),
-            InlineKeyboardButton("↩️ MAC → M3U", callback_data="mac_to_m3u")
-        ],
-        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_search_menu() -> InlineKeyboardMarkup:
-    """Search & Finder tools submenu"""
-    keyboard = [
-        [InlineKeyboardButton("📍 Search & Finder Tools", callback_data="noop")],
-        [
-            InlineKeyboardButton("🔎 Keyword Searcher", callback_data="keyword_searcher"),
-            InlineKeyboardButton("🗝️ StreamCreed Finder", callback_data="streamcreed_finder")
-        ],
-        [
-            InlineKeyboardButton("🗂️ Panel Searcher", callback_data="panel_searcher"),
-            InlineKeyboardButton("🌐 Proxy Finder", callback_data="proxy_finder")
-        ],
-        [
-            InlineKeyboardButton("🌐 WHOIS + AI Trust", callback_data="whois_lookup")
-        ],
-        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_advanced_menu() -> InlineKeyboardMarkup:
-    """Advanced tools submenu"""
-    keyboard = [
-        [InlineKeyboardButton("📍 Advanced Tools", callback_data="noop")],
-        [
-            InlineKeyboardButton("🧪 Combo Generator", callback_data="combo_generator"),
-            InlineKeyboardButton("🟢 Check Live Panels", callback_data="check_panels")
-        ],
-        [
-            InlineKeyboardButton("⚡ U:P Xtream (Single)", callback_data="up_xtream_single"),
-            InlineKeyboardButton("🔍 M3U Manual Check", callback_data="m3u_manual")
-        ],
-        [
-            InlineKeyboardButton("📱 MAC Scanner (Auto)", callback_data="mac_scanner")
-        ],
-        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
 
 # ============================================
 # BOT COMMAND HANDLERS
@@ -1881,12 +1813,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         f"👋 <b>Welcome {user.first_name}!</b>\n\n"
         "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ <b>Quick Start:</b>\n"
-        "1️⃣ Choose extraction format\n"
-        "2️⃣ Upload your file\n"
-        "3️⃣ Get results instantly!\n\n"
-        "💡 <i>Tip: Try Quick Actions for faster workflow</i>"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     
     await update.effective_message.reply_html(
@@ -1916,62 +1843,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"👋 <b>Welcome back, {user.first_name}!</b>\n\n"
             "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⚡ <b>Quick Start:</b>\n"
-            "1️⃣ Choose extraction format\n"
-            "2️⃣ Upload your file\n"
-            "3️⃣ Get results instantly!\n\n"
-            "💡 <i>Tip: Try Quick Actions for faster workflow</i>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             parse_mode='HTML',
             reply_markup=get_main_menu()
         )
         return
     
-    # === Submenus ===
-    if data == "submenu_converters":
-        await query.edit_message_text(
-            "🔄 <b>M3U Converters & Tools</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Convert between different IPTV formats:",
-            parse_mode='HTML',
-            reply_markup=get_converters_menu()
-        )
-        return
-    
-    if data == "submenu_mac":
-        await query.edit_message_text(
-            "🔑 <b>MAC Address Tools</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "MAC-based IPTV tools and converters:",
-            parse_mode='HTML',
-            reply_markup=get_mac_tools_menu()
-        )
-        return
-    
-    if data == "submenu_search":
-        await query.edit_message_text(
-            "🔎 <b>Search & Finder Tools</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Find and analyze IPTV resources:\n"
-            "• 🤖 AI-powered WHOIS trust analysis\n"
-            "• Search panels, proxies & keywords\n"
-            "• StreamCreed pattern detection",
-            parse_mode='HTML',
-            reply_markup=get_search_menu()
-        )
-        return
-    
-    if data == "submenu_advanced":
-        await query.edit_message_text(
-            "🧪 <b>Advanced Tools</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Expert-level IPTV utilities:",
-            parse_mode='HTML',
-            reply_markup=get_advanced_menu()
-        )
-        return
-    
-     # === Settings ===
+    # === Settings ===
     if data == "settings":
         context.user_data.clear()
         context.user_data['mode'] = 'settings'
@@ -2065,12 +1943,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['mode'] = 'whois_lookup'
         await query.edit_message_text(
-            f"<b>🌐 WHOIS Lookup</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📝 Send IP or domain:\n"
-            f"• <code>8.8.8.8</code> (IP)\n"
-            f"• <code>example.com</code> (Domain)\n\n"
-            f"💡 Get domain info, age, location & more!",
+            "🌐 <b>WHOIS Lookup</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📱 <b>Send IP or domain:</b>\n"
+            "• <code>8.8.8.8</code> (IP)\n"
+            "• <code>example.com</code> (Domain)\n\n"
+            "💡 Get domain info, age, location & more!",
             parse_mode='HTML',
             reply_markup=get_back_button()
         )
@@ -2477,11 +2355,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(result_path, 'w', encoding='utf-8') as f:
             f.write(report + "\n")
         
-        caption = (
-            f"✅ <b>WHOIS Complete</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🎯 Target: <code>{tgt}</code>"
-        )
+        caption = f"🌐 <b>WHOIS:</b> <code>{tgt}</code>"
         
         with open(result_path, 'rb') as f:
             await update.message.reply_document(
