@@ -1721,39 +1721,71 @@ class RedlineExtractor:
 # ============================================
 
 def get_main_menu() -> InlineKeyboardMarkup:
-    """Create main menu keyboard - Flat structure"""
+    """Create main menu keyboard"""
     keyboard = [
         # EXTRACTION
         [InlineKeyboardButton("📦 EXTRACTION", callback_data="noop")],
         [
-            InlineKeyboardButton("💬 N:P", callback_data="mode_np"),
-            InlineKeyboardButton("🔐 U:P", callback_data="mode_up")
+            InlineKeyboardButton("📝 Mobile:Pass", callback_data="mode_np"),
+            InlineKeyboardButton("👤 User:Pass", callback_data="mode_up"),
+            InlineKeyboardButton("📧 Mail:Pass", callback_data="mode_mp")
         ],
         [
-            InlineKeyboardButton("📧 M:P", callback_data="mode_mp"),
-            InlineKeyboardButton("📺 M3U", callback_data="mode_m3u")
-        ],
-        [
-            InlineKeyboardButton("🔑 MAC", callback_data="mode_mac"),
-            InlineKeyboardButton("🎯 ALL", callback_data="mode_all")
+            InlineKeyboardButton("🔧 M3U", callback_data="mode_m3u"),
+            InlineKeyboardButton("🔑 MAC:Key", callback_data="mode_mac"),
+            InlineKeyboardButton("⭐ ALL", callback_data="mode_all")
         ],
         
-        # QUICK ACTIONS
-        [InlineKeyboardButton("⚡ QUICK ACTIONS", callback_data="noop")],
+        # M3U TOOLS
+        [InlineKeyboardButton("🔧 M3U TOOLS", callback_data="noop")],
         [
-            InlineKeyboardButton("🚀 Auto Check M3U", callback_data="check_m3u"),
-            InlineKeyboardButton("⚡ Quick U:P Check", callback_data="up_xtream_auto")
+            InlineKeyboardButton("✅ Check Links", callback_data="check_m3u")
+        ],
+        [
+            InlineKeyboardButton("📊 M3U→Combo", callback_data="m3u_to_combo"),
+            InlineKeyboardButton("📊 Combo→M3U", callback_data="combo_to_m3u")
+        ],
+        [
+            InlineKeyboardButton("🔀 M3U→MAC", callback_data="m3u_to_mac"),
+            InlineKeyboardButton("🔀 MAC→M3U", callback_data="mac_to_m3u")
         ],
         
-        # TOOLS & CONVERTERS
-        [InlineKeyboardButton("🛠️ TOOLS & CONVERTERS", callback_data="noop")],
+        # PANEL TOOLS
+        [InlineKeyboardButton("⚡ PANEL TOOLS", callback_data="noop")],
         [
-            InlineKeyboardButton("🔄 M3U ⇄ Combo", callback_data="m3u_to_combo"),
-            InlineKeyboardButton("🔀 MAC Tools", callback_data="mac_to_m3u")
+            InlineKeyboardButton("📦 Panel Searcher", callback_data="panel_searcher"),
+            InlineKeyboardButton("🟢 Check Live Panels", callback_data="check_panels")
+        ],
+        
+        # CHECKERS
+        [InlineKeyboardButton("⚡ CHECKERS", callback_data="noop")],
+        [
+            InlineKeyboardButton("⚡ User:Pass Xtream (1)", callback_data="up_xtream_single"),
+            InlineKeyboardButton("🔴 M3U Manual (1)", callback_data="m3u_manual")
         ],
         [
-            InlineKeyboardButton("🔎 Search & Finder", callback_data="whois_lookup"),
-            InlineKeyboardButton("🧪 Advanced", callback_data="keyword_searcher")
+            InlineKeyboardButton("📱 MAC Host (1)", callback_data="mac_host_single")
+        ],
+        [
+            InlineKeyboardButton("⚡ User:Pass Xtream Auto", callback_data="up_xtream_auto")
+        ],
+        [
+            InlineKeyboardButton("🔴 M3U Scanner Auto", callback_data="check_m3u"),
+            InlineKeyboardButton("📱 MAC Scanner Auto", callback_data="mac_scanner")
+        ],
+        
+        # TOOLS
+        [InlineKeyboardButton("🚩 TOOLS", callback_data="noop")],
+        [
+            InlineKeyboardButton("🔎 Keyword Searcher", callback_data="keyword_searcher"),
+            InlineKeyboardButton("🔗 StreamCreed", callback_data="streamcreed_finder")
+        ],
+        [
+            InlineKeyboardButton("🌐 WHOIS", callback_data="whois_lookup"),
+            InlineKeyboardButton("🌐 Proxy Finder", callback_data="proxy_finder")
+        ],
+        [
+            InlineKeyboardButton("🖊️ Combo Generator", callback_data="combo_generator")
         ],
         
         # SETTINGS
@@ -1913,7 +1945,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['mode'] = 'up_xtream_auto'
         context.user_data['step'] = 'ask_host'
         await query.edit_message_text(
-            "<b>⚡ U:P Xtream Check (Auto)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "<b>⚡ User:Pass Xtream Scanner (Auto)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
             parse_mode='HTML',
             reply_markup=get_back_button()
@@ -1961,6 +1993,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "<b>🔎 Logs Keyword Searcher</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📤 Send log/text file first, then send keywords (comma separated).",
+            parse_mode='HTML',
+            reply_markup=get_back_button()
+        )
+        return
+
+    # === Phase 2: Panel Searcher ===
+    if data == "panel_searcher":
+        context.user_data.clear()
+        context.user_data['mode'] = 'panel_searcher'
+        await query.edit_message_text(
+            "<b>📦 Panel Searcher</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📤 Send log/text file to search for panel URLs.",
+            parse_mode='HTML',
+            reply_markup=get_back_button()
+        )
+        return
+
+    # === Phase 2: Check Live Panels ===
+    if data == "check_panels":
+        context.user_data.clear()
+        context.user_data['mode'] = 'check_panels'
+        await query.edit_message_text(
+            "<b>🟢 Check Live Panels</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📤 Send a file with panel URLs (one per line).",
             parse_mode='HTML',
             reply_markup=get_back_button()
         )
@@ -2285,7 +2341,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['mode'] = 'up_xtream_single'
         context.user_data['step'] = 'ask_host'
         await query.edit_message_text(
-            "<b>⚡ U:P Xtream Check (Single)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "<b>⚡ User:Pass Xtream Check (Single)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
             parse_mode='HTML',
             reply_markup=get_back_button()
@@ -2500,12 +2556,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode='HTML', reply_markup=get_back_button())
     
+    # M3U to MAC
+    elif data == "m3u_to_mac":
+        context.user_data['mode'] = 'm3u_to_mac'
+        context.user_data['action'] = 'convert'
+        text = (
+            "🔀 <b>M3U → MAC Converter</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔀 Extract MAC addresses from M3U URLs\n\n"
+            "📤 <b>Send M3U file:</b>\n"
+            "• M3U playlist with MAC links\n"
+            "• Bot extracts MAC addresses\n\n"
+            "✅ <b>Output:</b>\n"
+            "• Clean MAC addresses\n"
+            "• Deduplicated\n\n"
+            "⏳ Send your M3U file..."
+        )
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=get_back_button())
+    
     # Back to menu
     elif data == "back":
         welcome_text = (
-            "🔥 <b>REDLINE V15.0 - Enhanced Bot</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Select an option:"
+            "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         await query.edit_message_text(
             welcome_text,
