@@ -51,7 +51,7 @@ except ImportError:
     HAS_OPENAI = False
 
 # ============================================
-# AI ASSISTANT (Dual AI: Gemini + Perplexity)
+# AI ASSISTANT (AI: Gemini)
 # ============================================
 
 class GeminiAI:
@@ -65,8 +65,8 @@ class GeminiAI:
         if HAS_GEMINI and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
-                # Use the current stable free model
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
+                # Use gemini-pro - the stable free model
+                self.model = genai.GenerativeModel('gemini-pro')
                 self.enabled = True
             except Exception as e:
                 self.enabled = False
