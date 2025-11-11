@@ -1269,11 +1269,61 @@ class WHOISLookup:
 
     @staticmethod
     def _geo_ip(ip: str, timeout: int = 8) -> Dict:
-        try:
-            r = Net.get(f"https://ipapi.co/{ip}/json/", timeout=timeout)
-            return r.json() if r.status_code == 200 else {}
-        except Exception:
-            return {}
+        # Try multiple APIs with fallback (avoid rate limits)
+        apis = [
+            # API 1: ip-api.com (free, no key needed, 45 req/min)
+            {
+                'url': f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname",
+                'map': lambda d: {
+                    'country': d.get('countryCode', ''),
+                    'country_name': d.get('country', ''),
+                    'region': d.get('regionName', ''),
+                    'region_code': d.get('region', ''),
+                    'city': d.get('city', ''),
+                    'postal': d.get('zip', ''),
+                    'latitude': d.get('lat', ''),
+                    'longitude': d.get('lon', ''),
+                    'timezone': d.get('timezone', ''),
+                    'org': d.get('isp', ''),
+                    'asn': d.get('as', ''),
+                    'as_name': d.get('asname', '')
+                } if d.get('status') == 'success' else {}
+            },
+            # API 2: ipapi.co (backup, 1000/day limit)
+            {
+                'url': f"https://ipapi.co/{ip}/json/",
+                'map': lambda d: d if d.get('country') else {}
+            },
+            # API 3: ipwhois.app (backup, free)
+            {
+                'url': f"https://ipwhois.app/json/{ip}",
+                'map': lambda d: {
+                    'country': d.get('country_code', ''),
+                    'country_name': d.get('country', ''),
+                    'region': d.get('region', ''),
+                    'city': d.get('city', ''),
+                    'postal': d.get('postal', ''),
+                    'latitude': d.get('latitude', ''),
+                    'longitude': d.get('longitude', ''),
+                    'timezone': d.get('timezone', ''),
+                    'org': d.get('isp', ''),
+                    'asn': d.get('asn', '')
+                } if d.get('success') else {}
+            }
+        ]
+        
+        for api in apis:
+            try:
+                r = Net.get(api['url'], timeout=timeout)
+                if r.status_code == 200:
+                    data = r.json()
+                    result = api['map'](data)
+                    if result:  # If we got valid data, return it
+                        return result
+            except Exception:
+                continue  # Try next API
+        
+        return {}  # All APIs failed
 
     @staticmethod
     def _rdap_domain(domain: str, timeout: int = 12) -> Dict:
@@ -1601,6 +1651,139 @@ class ProxyFinder:
                     except Exception:
                         pass
         return all_list, working
+
+# ============================================
+# ARCHIVE SEARCH (ZIP files)
+# ============================================
+
+class ArchiveSearch:
+    """Search inside ZIP archives without full extraction"""
+    
+    @staticmethod
+    def search_in_zip(zip_path: str, keywords: List[str]) -> Dict[str, List[str]]:
+        """
+        Search for keywords in ZIP archive files
+        Returns: {filename: [matching_lines]}
+        """
+        import zipfile
+        results = {}
+        
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                for file_info in zf.filelist:
+                    # Skip directories
+                    if file_info.is_dir():
+                        continue
+                    
+                    # Only process text files
+                    filename = file_info.filename
+                    if not any(filename.lower().endswith(ext) for ext in ['.txt', '.log', '.csv', '.json', '.xml']):
+                        continue
+                    
+                    try:
+                        # Read file content
+                        with zf.open(file_info) as f:
+                            content = f.read()
+                            
+                            # Try different encodings
+                            for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                                try:
+                                    text = content.decode(encoding)
+                                    break
+                                except:
+                                    continue
+                            else:
+                                continue
+                            
+                            # Search for keywords
+                            matches = []
+                            lines = text.split('\n')
+                            for line_num, line in enumerate(lines, 1):
+                                line_lower = line.lower()
+                                for keyword in keywords:
+                                    if keyword.lower() in line_lower:
+                                        matches.append(f"Line {line_num}: {line.strip()[:200]}")
+                                        break
+                            
+                            if matches:
+                                results[filename] = matches[:100]  # Limit matches per file
+                    
+                    except Exception:
+                        continue
+        
+        except Exception:
+            pass
+        
+        return results
+    
+    @staticmethod
+    def list_archive_contents(zip_path: str) -> List[str]:
+        """List all files in archive"""
+        import zipfile
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                return [f.filename for f in zf.filelist if not f.is_dir()]
+        except:
+            return []
+
+# ============================================
+# IPTV BROWSER (Channel listing)
+# ============================================
+
+class IPTVBrowser:
+    """Browse IPTV channels from Xtream credentials"""
+    
+    @staticmethod
+    def get_xtream_info(host: str, username: str, password: str, timeout: int = 10) -> Dict:
+        """Get account info from Xtream API"""
+        try:
+            base_url = host.rstrip('/')
+            url = f"{base_url}/player_api.php?username={username}&password={password}"
+            
+            r = Net.get(url, timeout=timeout)
+            if r.status_code == 200:
+                return r.json()
+        except:
+            pass
+        return {}
+    
+    @staticmethod
+    def list_live_channels(host: str, username: str, password: str, limit: int = 50, timeout: int = 10) -> List[Dict]:
+        """Get list of live channels"""
+        try:
+            base_url = host.rstrip('/')
+            url = f"{base_url}/player_api.php?username={username}&password={password}&action=get_live_streams"
+            
+            r = Net.get(url, timeout=timeout)
+            if r.status_code == 200:
+                channels = r.json()
+                if isinstance(channels, list):
+                    return channels[:limit]
+        except:
+            pass
+        return []
+    
+    @staticmethod
+    def format_channel_list(channels: List[Dict], host: str, username: str, password: str) -> str:
+        """Format channel list as text"""
+        if not channels:
+            return "❌ No channels found"
+        
+        lines = []
+        lines.append(f"📺 Found {len(channels)} channels\n")
+        lines.append("=" * 50)
+        
+        for i, ch in enumerate(channels[:50], 1):  # Limit to 50 channels
+            name = ch.get('name', 'Unknown')
+            stream_id = ch.get('stream_id', ch.get('id', ''))
+            category = ch.get('category_name', ch.get('category_id', '-'))
+            
+            lines.append(f"\n{i}. 📡 {name}")
+            lines.append(f"   Category: {category}")
+            if stream_id:
+                lines.append(f"   ID: {stream_id}")
+        
+        return '\n'.join(lines)
 
 # ============================================
 # HEALTH CHECK WEB SERVER (for Koyeb)
@@ -2010,6 +2193,10 @@ def get_main_menu() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("🌐 WHOIS", callback_data="whois_lookup"),
             InlineKeyboardButton("🌐 Proxy Finder", callback_data="proxy_finder")
+        ],
+        [
+            InlineKeyboardButton("🔐 Archive Search", callback_data="archive_search"),
+            InlineKeyboardButton("📺 IPTV Browser", callback_data="iptv_browser")
         ],
         [
             InlineKeyboardButton("🖊️ Combo Generator", callback_data="combo_generator")
@@ -2423,6 +2610,30 @@ async def export_users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_html(f"❌ Export failed: {e}")
         logger.error(f"User export error: {e}\n{traceback.format_exc()}")
+
+# Debug mode toggle (global variable)
+DEBUG_MODE = False
+
+async def debug_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle debug mode - admin only"""
+    global DEBUG_MODE
+    
+    if not update.effective_user or update.effective_user.id not in OWNER_IDS:
+        return
+    
+    bot_stats.record_command(update.effective_user.id)
+    
+    DEBUG_MODE = not DEBUG_MODE
+    status = "🟢 ON" if DEBUG_MODE else "🔴 OFF"
+    
+    await update.message.reply_html(
+        f"🐛 <b>Debug Mode</b>\n\n"
+        f"Status: {status}\n\n"
+        f"{'✅ Detailed error logs enabled' if DEBUG_MODE else '❌ Detailed error logs disabled'}\n\n"
+        f"Use <code>/debug</code> again to toggle"
+    )
+    
+    logger.info(f"Debug mode {'enabled' if DEBUG_MODE else 'disabled'} by admin {update.effective_user.id}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - show welcome and main menu - ALL ENGLISH"""
@@ -2994,6 +3205,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # === Archive Search ===
+    if data == "archive_search":
+        context.user_data.clear()
+        context.user_data['mode'] = 'archive_search'
+        await query.edit_message_text(
+            "<b>🔐 Archive Search</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📦 Send a ZIP file to search inside\n"
+            "📝 Then send keywords separated by commas\n\n"
+            "<b>Example:</b>\n"
+            "<code>password, m3u, user, mail</code>\n\n"
+            "✅ Supports: .txt, .log, .csv, .json, .xml files\n"
+            "💾 No extraction needed - searches directly!",
+            parse_mode='HTML',
+            reply_markup=get_back_button()
+        )
+        return
+
+    # === IPTV Browser ===
+    if data == "iptv_browser":
+        context.user_data.clear()
+        context.user_data['mode'] = 'iptv_browser'
+        context.user_data['iptv_step'] = 'ask_host'
+        await query.edit_message_text(
+            "<b>📺 IPTV Browser</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🌐 Send Xtream host URL\n\n"
+            "<b>Example:</b>\n"
+            "<code>http://example.com:8080</code>\n\n"
+            "📡 Browse channels, check info, get server IPs",
+            parse_mode='HTML',
+            reply_markup=get_back_button()
+        )
+        return
+
     # PHASE 2: KEYWORD SEARCHER (keywords after file)
     if mode == 'keyword_searcher' and 'search_text' in context.user_data:
         kw_line = update.message.text or ''
@@ -3256,8 +3500,34 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         # Download file
         file = await update.message.document.get_file()
-        file_path = os.path.join(TEMP_DIR, f"{update.effective_user.id}_{file.file_id}.txt")
+        filename = update.message.document.file_name or "file.txt"
+        file_path = os.path.join(TEMP_DIR, f"{update.effective_user.id}_{file.file_id}_{filename}")
         await file.download_to_drive(file_path)
+        
+        # === HANDLE ARCHIVE SEARCH (ZIP files) ===
+        if mode == 'archive_search':
+            if not filename.lower().endswith('.zip'):
+                await status_msg.edit_text(
+                    "❌ <b>Invalid file!</b>\n\n"
+                    "Please send a ZIP archive file.\n"
+                    "📦 Supported: .zip files only",
+                    parse_mode='HTML'
+                )
+                os.remove(file_path)
+                context.user_data.clear()
+                return
+            
+            # Store ZIP path for keyword search
+            context.user_data['zip_path'] = file_path
+            await status_msg.edit_text(
+                "✅ <b>ZIP file received!</b>\n\n"
+                "📝 Now send keywords to search for\n"
+                "Separate multiple keywords with commas\n\n"
+                "<b>Example:</b>\n"
+                "<code>password, m3u, user, mail</code>",
+                parse_mode='HTML'
+            )
+            return
         
         # Check line count (memory protection)
         line_count = count_lines_efficient(file_path, MAX_LINES + 1)
@@ -4012,6 +4282,188 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.clear()
         return
     
+    # Archive Search - Keywords input
+    if mode == 'archive_search' and 'zip_path' in context.user_data:
+        keywords_text = update.message.text.strip()
+        keywords = [k.strip() for k in keywords_text.split(',') if k.strip()]
+        
+        if not keywords:
+            await update.message.reply_text(
+                "❌ <b>No keywords provided!</b>\n\n"
+                "Please send keywords separated by commas",
+                parse_mode='HTML'
+            )
+            return
+        
+        status_msg = await update.message.reply_text(
+            f"⏳ <b>Searching archive...</b>\n\n"
+            f"🔍 Keywords: {len(keywords)}\n"
+            f"📦 Scanning ZIP files...",
+            parse_mode='HTML'
+        )
+        
+        zip_path = context.user_data['zip_path']
+        results = ArchiveSearch.search_in_zip(zip_path, keywords)
+        
+        if not results:
+            await status_msg.edit_text(
+                "❌ <b>No matches found!</b>\n\n"
+                f"🔍 Keywords: {', '.join(keywords)}\n"
+                f"📦 Archive searched completely",
+                parse_mode='HTML',
+                reply_markup=get_main_menu()
+            )
+            os.remove(zip_path)
+            context.user_data.clear()
+            return
+        
+        # Create result file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_filename = f"ARCHIVE_SEARCH_{timestamp}.txt"
+        result_path = os.path.join(TEMP_DIR, result_filename)
+        
+        with open(result_path, 'w', encoding='utf-8') as f:
+            f.write(f"# Archive Search Results\n")
+            f.write(f"# Keywords: {', '.join(keywords)}\n")
+            f.write(f"# Files with matches: {len(results)}\n\n")
+            f.write("=" * 70 + "\n\n")
+            
+            for filename, matches in results.items():
+                f.write(f"\n📁 {filename}\n")
+                f.write("-" * 70 + "\n")
+                for match in matches:
+                    f.write(f"{match}\n")
+                f.write("\n")
+        
+        with open(result_path, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=result_filename,
+                caption=f"🔐 <b>Archive Search Results</b>\n\n"
+                        f"🔍 Keywords: {len(keywords)}\n"
+                        f"📄 Files matched: {len(results)}\n"
+                        f"✅ Search complete!",
+                parse_mode='HTML',
+                reply_markup=get_main_menu()
+            )
+        
+        await status_msg.delete()
+        os.remove(result_path)
+        os.remove(zip_path)
+        context.user_data.clear()
+        return
+    
+    # IPTV Browser - Multi-step input handling
+    if mode == 'iptv_browser':
+        step = context.user_data.get('iptv_step', '')
+        
+        # Step 1: Get host
+        if step == 'ask_host':
+            host = update.message.text.strip()
+            if not host.startswith(('http://', 'https://')):
+                await update.message.reply_text(
+                    "❌ <b>Invalid URL!</b>\n\n"
+                    "URL must start with http:// or https://\n\n"
+                    "<b>Example:</b>\n"
+                    "<code>http://example.com:8080</code>",
+                    parse_mode='HTML'
+                )
+                return
+            
+            context.user_data['iptv_host'] = host.rstrip('/')
+            context.user_data['iptv_step'] = 'ask_username'
+            await update.message.reply_text(
+                "✅ <b>Host saved!</b>\n\n"
+                "📝 Now send username",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Step 2: Get username
+        elif step == 'ask_username':
+            username = update.message.text.strip()
+            context.user_data['iptv_username'] = username
+            context.user_data['iptv_step'] = 'ask_password'
+            await update.message.reply_text(
+                "✅ <b>Username saved!</b>\n\n"
+                "🔑 Now send password",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Step 3: Get password and process
+        elif step == 'ask_password':
+            password = update.message.text.strip()
+            host = context.user_data.get('iptv_host', '')
+            username = context.user_data.get('iptv_username', '')
+            
+            status_msg = await update.message.reply_text(
+                "⏳ <b>Connecting to IPTV...</b>\n\n"
+                "📡 Getting channel list...",
+                parse_mode='HTML'
+            )
+            
+            # Get account info
+            info = IPTVBrowser.get_xtream_info(host, username, password, timeout=10)
+            
+            if not info or 'user_info' not in info:
+                await status_msg.edit_text(
+                    "❌ <b>Connection failed!</b>\n\n"
+                    "⚠️ Check credentials and host\n"
+                    "🔧 Make sure it's an Xtream API",
+                    parse_mode='HTML',
+                    reply_markup=get_main_menu()
+                )
+                context.user_data.clear()
+                return
+            
+            # Get channels
+            channels = IPTVBrowser.list_live_channels(host, username, password, limit=50, timeout=10)
+            
+            # Format results
+            user_info = info.get('user_info', {})
+            server_info = info.get('server_info', {})
+            
+            result_text = []
+            result_text.append("📺 IPTV BROWSER RESULTS")
+            result_text.append("=" * 50)
+            result_text.append("")
+            result_text.append("👤 ACCOUNT INFO:")
+            result_text.append(f"Username: {user_info.get('username', '-')}")
+            result_text.append(f"Status: {user_info.get('status', '-')}")
+            result_text.append(f"Active: {user_info.get('is_trial', '-')}")
+            result_text.append(f"Expiry: {user_info.get('exp_date', '-')}")
+            result_text.append("")
+            result_text.append("🖥️ SERVER INFO:")
+            result_text.append(f"URL: {server_info.get('url', host)}")
+            result_text.append(f"Port: {server_info.get('port', '-')}")
+            result_text.append(f"Protocol: {server_info.get('protocol', 'http')}")
+            result_text.append("")
+            result_text.append(IPTVBrowser.format_channel_list(channels, host, username, password))
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result_filename = f"IPTV_BROWSER_{timestamp}.txt"
+            result_path = os.path.join(TEMP_DIR, result_filename)
+            
+            with open(result_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(result_text))
+            
+            with open(result_path, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=result_filename,
+                    caption=f"📺 <b>IPTV Browser</b>\n\n"
+                            f"✅ Connected successfully!\n"
+                            f"📡 Channels: {len(channels)}",
+                    parse_mode='HTML',
+                    reply_markup=get_main_menu()
+                )
+            
+            await status_msg.delete()
+            os.remove(result_path)
+            context.user_data.clear()
+            return
+    
     # Check if we're in combo_to_m3u mode and waiting for base URL
     if mode == 'combo_to_m3u' and 'combo_data' in context.user_data:
         base_url = update.message.text.strip()
@@ -4273,6 +4725,7 @@ def main():
     # Admin commands
     application.add_handler(CommandHandler("stats", stats_cmd))
     application.add_handler(CommandHandler("sysinfo", sysinfo_cmd))
+    application.add_handler(CommandHandler("debug", debug_cmd))
     application.add_handler(CommandHandler("broadcast", broadcast_cmd))
     application.add_handler(CommandHandler("confirm_broadcast", confirm_broadcast_cmd))
     application.add_handler(CommandHandler("restart", restart_cmd))
