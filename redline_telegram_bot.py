@@ -3238,6 +3238,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get('mode')
     action = context.user_data.get('action', 'extract')
     
+    # Check if user has active session (used /redline and selected option)
     if not mode:
         await update.message.reply_text(
             "⚠️ Please select an option first\n"
@@ -3245,33 +3246,46 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check file size
-    file_size = update.message.document.file_size
-    if file_size > MAX_FILE_SIZE:
+    # Check if user is already processing a file (one file at a time)
+    if context.user_data.get('processing_file'):
         await update.message.reply_text(
-            f"❌ <b>File too large!</b>\n\n"
-            f"📊 <b>Limits:</b>\n"
-            f"• Max file size: <code>{format_file_size(MAX_FILE_SIZE)}</code>\n"
-            f"• Max lines: <code>{format_number(MAX_LINES)}</code>\n\n"
-            f"📁 <b>Your file:</b> <code>{format_file_size(file_size)}</code>\n\n"
-            f"💡 <b>Tips:</b>\n"
-            f"• Split large files into smaller chunks\n"
-            f"• Remove duplicate lines first\n"
-            f"• Use compression (gzip) if possible\n\n"
-            f"<i>Limits protect server resources on Koyeb</i>",
+            "⚠️ <b>Please wait!</b>\n\n"
+            "You're already processing a file.\n"
+            "Wait for it to finish before sending another.\n\n"
+            "<i>Only one file at a time per user</i>",
             parse_mode='HTML'
         )
         return
     
-    # Show processing message
-    status_msg = await update.message.reply_text(
-        "⏳ <b>Processing...</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📥 Downloading file...",
-        parse_mode='HTML'
-    )
+    # Set processing lock (will be released in finally block)
+    context.user_data['processing_file'] = True
     
     try:
+        # Check file size
+        file_size = update.message.document.file_size
+        if file_size > MAX_FILE_SIZE:
+            await update.message.reply_text(
+                f"❌ <b>File too large!</b>\n\n"
+                f"📊 <b>Limits:</b>\n"
+                f"• Max file size: <code>{format_file_size(MAX_FILE_SIZE)}</code>\n"
+                f"• Max lines: <code>{format_number(MAX_LINES)}</code>\n\n"
+                f"📁 <b>Your file:</b> <code>{format_file_size(file_size)}</code>\n\n"
+                f"💡 <b>Tips:</b>\n"
+                f"• Split large files into smaller chunks\n"
+                f"• Remove duplicate lines first\n"
+                f"• Use compression (gzip) if possible\n\n"
+                f"<i>Limits protect server resources on Koyeb</i>",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Show processing message
+        status_msg = await update.message.reply_text(
+            "⏳ <b>Processing...</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📥 Downloading file...",
+            parse_mode='HTML'
+        )
         # Download file
         file = await update.message.document.get_file()
         file_path = os.path.join(TEMP_DIR, f"{update.effective_user.id}_{file.file_id}.txt")
@@ -3978,6 +3992,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(file_path):
             os.remove(file_path)
         context.user_data.clear()
+    finally:
+        # Always release the processing lock
+        context.user_data.pop('processing_file', None)
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages - for Base URL input and Phase 1 flows"""
@@ -4411,6 +4428,13 @@ if __name__ == '__main__':
             restart_count += 1
             if restart_count > 1:
                 logger.info(f"\n🔄 RESTART #{restart_count} (Consecutive failures: {consecutive_failures})")
+                # Create a fresh event loop for restart attempts
+                try:
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                except Exception as loop_err:
+                    logger.warning(f"Could not create new event loop: {loop_err}")
             
             main()
             
