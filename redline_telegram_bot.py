@@ -363,6 +363,39 @@ class BotStatistics:
 bot_stats = BotStatistics()
 
 # ============================================
+# ACCESS CONTROL CONFIG
+# ============================================
+# Allow posting only from these channels; use env CHANNEL_IDS or CHANNEL_ID
+_chan_env = (os.environ.get('CHANNEL_IDS') or os.environ.get('CHANNEL_ID') or '').strip()
+_chan_list = _chan_env.split(',') if _chan_env else []
+ALLOWED_CHANNEL_IDS = set()
+for _c in _chan_list:
+    _c = _c.strip()
+    if not _c:
+        continue
+    try:
+        ALLOWED_CHANNEL_IDS.add(int(_c))
+    except Exception:
+        # supports "-100..." strings too
+        try:
+            ALLOWED_CHANNEL_IDS.add(int(_c))
+        except Exception:
+            pass
+
+# Owner allowlist (comma-separated numeric IDs via env OWNER_IDS)
+_owner_env = os.environ.get('OWNER_IDS', '').strip()
+OWNER_IDS = set()
+if _owner_env:
+    for s in _owner_env.split(','):
+        s = s.strip()
+        if not s:
+            continue
+        try:
+            OWNER_IDS.add(int(s))
+        except Exception:
+            pass
+
+# ============================================
 # ADMIN NOTIFICATION SYSTEM
 # ============================================
 
@@ -396,39 +429,6 @@ async def notify_admins(application, message: str, parse_mode: str = 'HTML'):
             )
         except Exception as e:
             logger.warning(f"Could not notify admin {admin_id}: {e}")
-
-# ============================================
-# ACCESS CONTROL CONFIG
-# ============================================
-# Allow posting only from these channels; use env CHANNEL_IDS or CHANNEL_ID
-_chan_env = (os.environ.get('CHANNEL_IDS') or os.environ.get('CHANNEL_ID') or '').strip()
-_chan_list = _chan_env.split(',') if _chan_env else []
-ALLOWED_CHANNEL_IDS = set()
-for _c in _chan_list:
-    _c = _c.strip()
-    if not _c:
-        continue
-    try:
-        ALLOWED_CHANNEL_IDS.add(int(_c))
-    except Exception:
-        # supports "-100..." strings too
-        try:
-            ALLOWED_CHANNEL_IDS.add(int(_c))
-        except Exception:
-            pass
-
-# Owner allowlist (comma-separated numeric IDs via env OWNER_IDS)
-_owner_env = os.environ.get('OWNER_IDS', '').strip()
-OWNER_IDS = set()
-if _owner_env:
-    for s in _owner_env.split(','):
-        s = s.strip()
-        if not s:
-            continue
-        try:
-            OWNER_IDS.add(int(s))
-        except Exception:
-            pass
 
 # ============================================
 # SETTINGS (persistent)
