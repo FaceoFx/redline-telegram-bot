@@ -510,15 +510,10 @@ def allowed_chat(update: Update) -> bool:
                 return int(chat.id) in ALLOWED_CHANNEL_IDS
             except Exception:
                 return False
-        # Private chats only from owners
+        # Allow ALL private chats (session management controls access)
+        # Users from the 4 channels can interact with bot privately
         if chat.type == 'private':
-            user = update.effective_user
-            if user:
-                try:
-                    return int(user.id) in OWNER_IDS
-                except Exception:
-                    return False
-            return False
+            return True
         # Everything else denied
         return False
     except Exception:
