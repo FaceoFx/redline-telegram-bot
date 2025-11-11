@@ -2994,33 +2994,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # PHASE 2: WHOIS (text input)
-    if mode == 'whois_lookup':
-        target = update.message.text.strip()
-        status_msg = await update.message.reply_html("⏳ <b>Running WHOIS...</b>")
-        tgt, report = WHOISLookup.whois_report(target)
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_filename = f"WHOIS_{timestamp}.txt"
-        result_path = os.path.join(TEMP_DIR, result_filename)
-        with open(result_path, 'w', encoding='utf-8') as f:
-            f.write(report + "\n")
-        
-        caption = f"🌐 <b>WHOIS:</b> <code>{tgt}</code>"
-        
-        with open(result_path, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=result_filename,
-                caption=caption,
-                parse_mode='HTML',
-                reply_markup=get_main_menu()
-            )
-        await status_msg.delete()
-        os.remove(result_path)
-        context.user_data.clear()
-        return
-
     # PHASE 2: KEYWORD SEARCHER (keywords after file)
     if mode == 'keyword_searcher' and 'search_text' in context.user_data:
         kw_line = update.message.text or ''
@@ -4011,6 +3984,33 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         if txt.startswith('/redline'):
             await start(update, context)
             return
+    
+    # WHOIS Lookup handler
+    if mode == 'whois_lookup':
+        target = update.message.text.strip()
+        status_msg = await update.message.reply_html("⏳ <b>Running WHOIS...</b>")
+        tgt, report = WHOISLookup.whois_report(target)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_filename = f"WHOIS_{timestamp}.txt"
+        result_path = os.path.join(TEMP_DIR, result_filename)
+        with open(result_path, 'w', encoding='utf-8') as f:
+            f.write(report + "\n")
+        
+        caption = f"🌐 <b>WHOIS:</b> <code>{tgt}</code>"
+        
+        with open(result_path, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=result_filename,
+                caption=caption,
+                parse_mode='HTML',
+                reply_markup=get_main_menu()
+            )
+        await status_msg.delete()
+        os.remove(result_path)
+        context.user_data.clear()
+        return
     
     # Check if we're in combo_to_m3u mode and waiting for base URL
     if mode == 'combo_to_m3u' and 'combo_data' in context.user_data:
