@@ -4314,8 +4314,12 @@ def main():
     logger.info("🚀 Progress tracking & caching enabled")
     logger.info(f"📊 Resource limits: {format_file_size(MAX_FILE_SIZE)} / {format_number(MAX_LINES)} lines / {MAX_WORKERS} workers")
     
-    # Notify admins of successful startup (async)
-    async def send_startup_notification():
+    # Notify admins of successful startup (after bot initializes)
+    async def send_startup_notification(app):
+        """Send startup notification to admins after bot starts"""
+        if not ADMIN_CHAT_IDS:
+            return
+        
         await asyncio.sleep(5)  # Wait for bot to fully initialize
         startup_msg = (
             "🚀 <b>BOT STARTED SUCCESSFULLY</b>\n"
@@ -4327,10 +4331,10 @@ def main():
             f"📊 <b>Stats Tracking:</b> ✅ Active\n\n"
             f"🤖 <b>REDLINE V15.0</b> | Production Ready"
         )
-        await notify_admins(application, startup_msg)
+        await notify_admins(app, startup_msg)
     
-    if ADMIN_CHAT_IDS:
-        asyncio.create_task(send_startup_notification())
+    # Register post-init callback to send notification
+    application.post_init = send_startup_notification
     
     # Run bot with retry on conflict
     logger.info("🚀 Starting polling loop...")
