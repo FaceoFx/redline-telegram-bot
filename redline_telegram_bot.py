@@ -252,13 +252,37 @@ PROCESSING_TIMEOUT = 300  # 5 minutes max per operation
 m3u_cache = SimpleCache(ttl=3600)
 result_cache = SimpleCache(ttl=1800)  # 30 min for results
 
-# Proxy configuration (optional)
-# Set to None to disable proxy, or provide proxy dict
-# HTTP Proxy Example: 
-#   PROXY_CONFIG = {'http': 'http://proxy:port', 'https': 'http://proxy:port'}
-# SOCKS5 Proxy Example (requires: pip install requests[socks]):
-#   PROXY_CONFIG = {'http': 'socks5://proxy:port', 'https': 'socks5://proxy:port'}
-PROXY_CONFIG = None  # legacy, overridden by settings if enabled
+# Proxy configuration (optional) - Read from environment variables
+# Supports HTTP, HTTPS, and SOCKS5 proxies for M3U checking and validation
+PROXY_ENABLED = os.environ.get("PROXY_ENABLED", "false").lower() == "true"
+PROXY_VALUE = os.environ.get("PROXY_VALUE", "").strip()
+
+if PROXY_ENABLED and PROXY_VALUE:
+    # Parse proxy URL and create config dict
+    if PROXY_VALUE.startswith("socks"):
+        # SOCKS5 proxy: socks5://host:port
+        PROXY_CONFIG = {
+            'http': PROXY_VALUE,
+            'https': PROXY_VALUE
+        }
+        logger.info(f"🔐 Proxy enabled: SOCKS5 (requires requests[socks])")
+    elif PROXY_VALUE.startswith("http"):
+        # HTTP/HTTPS proxy: http://host:port
+        PROXY_CONFIG = {
+            'http': PROXY_VALUE,
+            'https': PROXY_VALUE
+        }
+        logger.info(f"🔐 Proxy enabled: HTTP/HTTPS")
+    else:
+        # Assume http:// if no scheme provided
+        proxy_url = f"http://{PROXY_VALUE}"
+        PROXY_CONFIG = {
+            'http': proxy_url,
+            'https': proxy_url
+        }
+        logger.info(f"🔐 Proxy enabled: {proxy_url}")
+else:
+    PROXY_CONFIG = None
 
 # ============================================
 # BOT STATISTICS & MONITORING SYSTEM
@@ -5053,6 +5077,7 @@ if __name__ == '__main__':
         logger.info(f"   Mode: {'WEBHOOK' if USE_WEBHOOK and KOYEB_PUBLIC_URL else 'POLLING'}")
         logger.info(f"   Keep-alive: {'2min aggressive' if KOYEB_PUBLIC_URL else 'Internal fallback'}")
         logger.info(f"   Health checks: Advanced (self-healing)")
+        logger.info(f"   Proxy: {'Enabled' if PROXY_CONFIG else 'Disabled'}")
         
         # Warn if KOYEB_PUBLIC_URL is not set
         if not KOYEB_PUBLIC_URL:
