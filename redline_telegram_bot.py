@@ -1983,7 +1983,7 @@ def _start_keepalive_ping(port: int):
     
     th = threading.Thread(target=ping_loop, daemon=True)
     th.start()
-    logger.info("✅ Keep-alive mechanism started (4min interval)")
+    logger.info("✅ Keep-alive mechanism started (2min aggressive interval)")
 
 # ============================================
 # GLOBAL ERROR HANDLER
@@ -5014,10 +5014,49 @@ def main():
                 drop_pending_updates=True,
                 secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None
             )
+            # If we reach here, webhook exited normally
+            logger.warning("⚠️ Webhook loop exited - likely Koyeb container shutdown")
+            return  # Exit main() normally
+            
         except Exception as e:
             logger.error(f"❌ Webhook mode failed: {e}")
             logger.warning("⚠️ Falling back to polling mode...")
             use_webhook_mode = False
+            
+            # Recreate application for polling (fresh event loop)
+            logger.info("🔄 Recreating application for polling mode...")
+            application = (
+                Application.builder()
+                .token(BOT_TOKEN)
+                .get_updates_read_timeout(30)
+                .get_updates_write_timeout(30)
+                .get_updates_connect_timeout(30)
+                .get_updates_pool_timeout(30)
+                .build()
+            )
+            
+            # Re-add all handlers
+            application.add_handler(CommandHandler("redline", start))
+            application.add_handler(CommandHandler("health", health_cmd))
+            application.add_handler(CommandHandler("help", help_cmd))
+            application.add_handler(CommandHandler("stats", stats_cmd))
+            application.add_handler(CommandHandler("sysinfo", sysinfo_cmd))
+            application.add_handler(CommandHandler("debug", debug_cmd))
+            application.add_handler(CommandHandler("broadcast", broadcast_cmd))
+            application.add_handler(CommandHandler("confirm_broadcast", confirm_broadcast_cmd))
+            application.add_handler(CommandHandler("restart", restart_cmd))
+            application.add_handler(CommandHandler("confirm_restart", confirm_restart_cmd))
+            application.add_handler(CommandHandler("backup", backup_cmd))
+            application.add_handler(CommandHandler("export_stats", export_stats_cmd))
+            application.add_handler(CommandHandler("export_users", export_users_cmd))
+            application.add_handler(CallbackQueryHandler(button_callback))
+            application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+            application.add_error_handler(error_handler)
+            
+            # Re-add activity tracker
+            from telegram.ext import TypeHandler
+            application.add_handler(TypeHandler(Update, track_activity), group=-1)
     
     # Fallback to polling if webhook not enabled or failed
     if not use_webhook_mode:
