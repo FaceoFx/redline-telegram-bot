@@ -191,6 +191,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN env var is required")
 
+# Koyeb public URL for keep-alive (prevents auto-sleep)
+# Set this to your Koyeb app URL (e.g., https://your-app-name.koyeb.app)
+# If not set, will fall back to internal pings (less effective)
+KOYEB_PUBLIC_URL = os.environ.get("KOYEB_PUBLIC_URL", "").strip()
+
 # Logging configuration
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1789,6 +1794,10 @@ class IPTVBrowser:
 # HEALTH CHECK WEB SERVER (for Koyeb)
 # ============================================
 
+# Global health server instance (singleton)
+_health_server = None
+_health_server_lock = threading.Lock()
+
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
@@ -1808,36 +1817,85 @@ class _HealthHandler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
         except Exception:
             pass
+    
+    def log_message(self, format, *args):
+        # Suppress health check logs to reduce noise
+        pass
 
 def start_health_server():
-    try:
-        port = int(os.environ.get('PORT', '8000'))
-        server = HTTPServer(('', port), _HealthHandler)
-        th = threading.Thread(target=server.serve_forever, daemon=True)
-        th.start()
-        logger.info(f"🌐 Health server listening on port {port}")
+    """Start health server (singleton pattern to prevent 'Address already in use')"""
+    global _health_server
+    
+    with _health_server_lock:
+        # If server already running, don't create a new one
+        if _health_server is not None:
+            logger.info("🌐 Health server already running (reusing)")
+            return
         
-        # Start keep-alive ping to prevent Koyeb sleep
-        _start_keepalive_ping(port)
-    except Exception as e:
-        logger.warning(f"Health server failed to start: {e}")
+        try:
+            port = int(os.environ.get('PORT', '8000'))
+            
+            # Set SO_REUSEADDR to allow quick restarts
+            class ReuseHTTPServer(HTTPServer):
+                def server_bind(self):
+                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    super().server_bind()
+            
+            _health_server = ReuseHTTPServer(('', port), _HealthHandler)
+            th = threading.Thread(target=_health_server.serve_forever, daemon=True)
+            th.start()
+            logger.info(f"🌐 Health server listening on port {port}")
+            
+            # Start keep-alive ping to prevent Koyeb sleep
+            _start_keepalive_ping(port)
+        except Exception as e:
+            logger.warning(f"Health server failed to start: {e}")
+            _health_server = None  # Reset on failure
 
 def _start_keepalive_ping(port: int):
-    """Ping health endpoint every 4 minutes to prevent Koyeb sleep (5min timeout)"""
+    """Generate external HTTP traffic every 4 minutes to prevent Koyeb sleep (5min timeout)"""
     def ping_loop():
         import time
+        first_ping = True
+        
         while True:
             try:
                 time.sleep(240)  # 4 minutes
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)
-                sock.connect(('127.0.0.1', port))
-                sock.sendall(b'GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n')
-                sock.recv(100)
-                sock.close()
-                logger.debug("Keep-alive ping sent")
-            except Exception:
-                pass
+                
+                # Try to ping our own external URL to generate "real" traffic
+                koyeb_url = os.environ.get('KOYEB_PUBLIC_URL', '')
+                
+                if koyeb_url and HAS_REQUESTS:
+                    # External HTTP request (counts as real traffic for Koyeb)
+                    try:
+                        import requests
+                        requests.get(f"{koyeb_url}/health", timeout=5)
+                        logger.debug("✅ Keep-alive: External ping sent")
+                    except Exception:
+                        # Fallback to internal ping
+                        _internal_ping(port)
+                else:
+                    # Fallback to internal socket ping
+                    _internal_ping(port)
+                    
+                if first_ping:
+                    logger.info("✅ Keep-alive system active (prevents Koyeb sleep)")
+                    first_ping = False
+                    
+            except Exception as e:
+                logger.debug(f"Keep-alive error: {e}")
+    
+    def _internal_ping(port: int):
+        """Internal fallback ping"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            sock.connect(('127.0.0.1', port))
+            sock.sendall(b'GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n')
+            sock.recv(100)
+            sock.close()
+        except Exception:
+            pass
     
     th = threading.Thread(target=ping_loop, daemon=True)
     th.start()
@@ -4803,6 +4861,36 @@ def main():
     
     # Run bot with retry on conflict
     logger.info("🚀 Starting polling loop...")
+    
+    # Activity monitor to detect Koyeb sleep
+    last_activity = {'time': time.time()}
+    
+    def activity_monitor():
+        """Monitor for signs of Koyeb sleep (no activity for 5+ minutes)"""
+        while True:
+            try:
+                time.sleep(60)  # Check every minute
+                idle_time = time.time() - last_activity['time']
+                
+                if idle_time > 360:  # 6 minutes of no activity
+                    logger.warning(f"⚠️ No activity for {int(idle_time/60)} minutes - possible Koyeb sleep approaching")
+                    # Update activity to prevent spam
+                    last_activity['time'] = time.time()
+            except Exception:
+                pass
+    
+    # Start activity monitor
+    monitor_thread = threading.Thread(target=activity_monitor, daemon=True)
+    monitor_thread.start()
+    
+    # Update activity on each update
+    async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        last_activity['time'] = time.time()
+    
+    # Add activity tracker as first handler (runs before all others)
+    from telegram.ext import TypeHandler
+    application.add_handler(TypeHandler(Update, track_activity), group=-1)
+    
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -4810,8 +4898,9 @@ def main():
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True
             )
-            # If polling exits normally (shouldn't happen unless stopped)
-            logger.info("ℹ️ Polling loop exited normally")
+            # If polling exits normally, it's likely Koyeb stopped the container
+            logger.warning("⚠️ Polling loop exited normally - likely Koyeb container shutdown")
+            logger.warning("🔄 This is expected when Koyeb sleeps or redeploys the service")
             break
         except telegram.error.Conflict as e:
             if attempt < max_retries - 1:
@@ -4852,6 +4941,13 @@ if __name__ == '__main__':
         logger.info(f"✅ Temp directory: {TEMP_DIR}")
         logger.info(f"✅ Allowed channels: {len(ALLOWED_CHANNEL_IDS)}")
         
+        # Warn if KOYEB_PUBLIC_URL is not set
+        if not KOYEB_PUBLIC_URL:
+            logger.warning("⚠️ KOYEB_PUBLIC_URL not set - using internal keep-alive (less effective)")
+            logger.warning("💡 Set KOYEB_PUBLIC_URL to your Koyeb app URL to prevent auto-sleep")
+        else:
+            logger.info(f"✅ Keep-alive target: {KOYEB_PUBLIC_URL}")
+        
     except Exception as e:
         logger.error(f"❌ Startup validation failed: {e}")
         logger.error(traceback.format_exc())
@@ -4891,9 +4987,13 @@ if __name__ == '__main__':
                 logger.info("✅ Bot shut down gracefully")
                 break
             
-            # Reset failure counter on successful run
+            # Reset failure counter on successful run (normal exit = success)
             consecutive_failures = 0
-            logger.warning("⚠️ Bot stopped unexpectedly but cleanly. Restarting...")
+            
+            # Check if this is likely a Koyeb sleep/restart scenario
+            logger.info("🔄 Bot stopped cleanly - this is normal for Koyeb sleep/restart")
+            logger.info("⏳ Waiting 5 seconds before restarting...")
+            time.sleep(5)  # Brief pause before restart
             
         except KeyboardInterrupt:
             logger.info("\n🛑 Bot stopped by user (Ctrl+C)")
