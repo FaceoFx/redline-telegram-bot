@@ -4670,7 +4670,6 @@ def main():
             
             # Create a fresh event loop for polling
             try:
-                import asyncio
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
             except Exception as loop_err:
@@ -4806,7 +4805,6 @@ if __name__ == '__main__':
                 logger.info(f"\n🔄 RESTART #{restart_count} (Consecutive failures: {consecutive_failures})")
                 # Create a fresh event loop for restart attempts
                 try:
-                    import asyncio
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                 except Exception as loop_err:
