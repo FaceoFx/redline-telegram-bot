@@ -19,7 +19,11 @@ import sys
 import traceback
 import signal
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from aiohttp import web
+try:
+    from aiohttp import web
+    HAS_AIOHTTP = True
+except Exception:
+    HAS_AIOHTTP = False
 from datetime import datetime, timezone
 from typing import List, Set, Tuple, Dict
 from urllib.parse import urlparse, parse_qs
@@ -210,6 +214,7 @@ elif _strict_env == "false":
     KOYEB_STRICT_WEBHOOK = False
 else:
     KOYEB_STRICT_WEBHOOK = bool(os.environ.get("KOYEB_PUBLIC_URL", "").strip())
+LOG_JSON = os.environ.get("LOG_JSON", "false").strip().lower() == "true"
 
 # Logging configuration
 logging.basicConfig(
@@ -225,6 +230,24 @@ logging.getLogger('telegram').setLevel(logging.WARNING)
 logging.getLogger('telegram.ext').setLevel(logging.INFO)  # Keep Application logs
 logging.getLogger('apscheduler').setLevel(logging.WARNING)  # Reduce scheduler noise
 
+# Optional JSON logging for easier parsing in platforms
+if LOG_JSON:
+    class _JsonFormatter(logging.Formatter):
+        def format(self, record: logging.LogRecord) -> str:
+            try:
+                import json as _json
+                return _json.dumps({
+                    "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+                    "level": record.levelname,
+                    "name": record.name,
+                    "message": record.getMessage(),
+                }, ensure_ascii=False)
+            except Exception:
+                return super().format(record)
+    _fmt = _JsonFormatter()
+    for _h in logging.getLogger().handlers:
+        _h.setFormatter(_fmt)
+
 # ============================================
 # AIOHTTP helpers for unified webhook + ping
 # ============================================
@@ -234,6 +257,32 @@ async def _ping_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "time": int(time.time())})
     except Exception:
         return web.Response(status=200, text="ok")
+
+async def _metrics_handler(request: web.Request) -> web.Response:
+    try:
+        data = {
+            "uptime": bot_stats.get_uptime(),
+            "commands": bot_stats.commands_executed,
+            "files": bot_stats.files_processed,
+            "errors": bot_stats.errors_caught,
+            "extractions": bot_stats.total_extractions,
+            "lines": bot_stats.total_lines_processed,
+            "users": len(bot_stats.users_served),
+            "time": int(time.time()),
+        }
+        return web.json_response(data)
+    except Exception:
+        return web.Response(status=200, text="{}")
+
+async def _maintenance_job(context):
+    try:
+        m3u_cache.clear_expired()
+    except Exception:
+        pass
+    try:
+        result_cache.clear_expired()
+    except Exception:
+        pass
 
 async def _start_aiohttp_webhook(application: Application, webhook_url: str, port: int, secret: str | None):
     await application.initialize()
@@ -247,6 +296,7 @@ async def _start_aiohttp_webhook(application: Application, webhook_url: str, por
     app = web.Application()
     app.router.add_post('/webhook', application.webhook_handler())
     app.router.add_get('/ping', _ping_handler)
+    app.router.add_get('/metrics', _metrics_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -255,6 +305,12 @@ async def _start_aiohttp_webhook(application: Application, webhook_url: str, por
 
     await application.start()
     logger.info(f"✅ AIOHTTP webhook server started on :{port} with /webhook and /ping")
+    # Schedule periodic maintenance if JobQueue is available
+    try:
+        if application.job_queue:
+            application.job_queue.run_repeating(_maintenance_job, interval=300, first=60)
+    except Exception:
+        pass
     # Sleep forever until canceled
     try:
         while True:
@@ -4702,13 +4758,22 @@ def main():
             
             logger.info(f"🔗 Webhook URL: {webhook_url}")
             
-            # Start aiohttp server hosting both /webhook and /ping on the public PORT
-            asyncio.run(_start_aiohttp_webhook(
-                application,
-                webhook_url,
-                port,
-                WEBHOOK_SECRET if WEBHOOK_SECRET else None
-            ))
+            # Ensure aiohttp is available
+            if not HAS_AIOHTTP:
+                msg = "aiohttp is not installed. Add 'aiohttp' to requirements and redeploy."
+                logger.error(msg)
+                if KOYEB_STRICT_WEBHOOK:
+                    sys.exit(1)
+                logger.warning("⚠️ Falling back to polling mode due to missing aiohttp...")
+                use_webhook_mode = False
+            else:
+                # Start aiohttp server hosting both /webhook and /ping on the public PORT
+                asyncio.run(_start_aiohttp_webhook(
+                    application,
+                    webhook_url,
+                    port,
+                    WEBHOOK_SECRET if WEBHOOK_SECRET else None
+                ))
             # If we reach here, webhook exited normally
             logger.warning("⚠️ Webhook loop exited - likely Koyeb container shutdown")
             return  # Exit main() normally
