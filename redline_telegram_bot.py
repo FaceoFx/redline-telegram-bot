@@ -19,6 +19,7 @@ import sys
 import traceback
 import signal
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from aiohttp import web
 from datetime import datetime, timezone
 from typing import List, Set, Tuple, Dict
 from urllib.parse import urlparse, parse_qs
@@ -223,6 +224,44 @@ logging.getLogger('httpcore').setLevel(logging.WARNING)
 logging.getLogger('telegram').setLevel(logging.WARNING)
 logging.getLogger('telegram.ext').setLevel(logging.INFO)  # Keep Application logs
 logging.getLogger('apscheduler').setLevel(logging.WARNING)  # Reduce scheduler noise
+
+# ============================================
+# AIOHTTP helpers for unified webhook + ping
+# ============================================
+
+async def _ping_handler(request: web.Request) -> web.Response:
+    try:
+        return web.json_response({"ok": True, "time": int(time.time())})
+    except Exception:
+        return web.Response(status=200, text="ok")
+
+async def _start_aiohttp_webhook(application: Application, webhook_url: str, port: int, secret: str | None):
+    await application.initialize()
+    await application.bot.set_webhook(
+        url=webhook_url,
+        secret_token=secret if secret else None,
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
+    )
+
+    app = web.Application()
+    app.router.add_post('/webhook', application.webhook_handler())
+    app.router.add_get('/ping', _ping_handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
+    await application.start()
+    logger.info(f"✅ AIOHTTP webhook server started on :{port} with /webhook and /ping")
+    # Sleep forever until canceled
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        await application.stop()
+        await runner.cleanup()
 
 # Global exception handler for uncaught exceptions
 def global_exception_handler(exc_type, exc_value, exc_traceback):
@@ -4663,16 +4702,13 @@ def main():
             
             logger.info(f"🔗 Webhook URL: {webhook_url}")
             
-            # Start webhook server (runs forever)
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path="/webhook",
-                webhook_url=webhook_url,
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None
-            )
+            # Start aiohttp server hosting both /webhook and /ping on the public PORT
+            asyncio.run(_start_aiohttp_webhook(
+                application,
+                webhook_url,
+                port,
+                WEBHOOK_SECRET if WEBHOOK_SECRET else None
+            ))
             # If we reach here, webhook exited normally
             logger.warning("⚠️ Webhook loop exited - likely Koyeb container shutdown")
             return  # Exit main() normally
