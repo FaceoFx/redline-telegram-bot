@@ -331,8 +331,27 @@ async def _start_aiohttp_webhook(application: Application, webhook_url: str, por
             allowed_updates=Update.ALL_TYPES,
         )
 
+    async def _webhook_handler(request: 'web.Request') -> 'web.Response':
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(status=400, text="invalid json")
+
+        try:
+            update = Update.de_json(data=data, bot=application.bot)
+        except Exception:
+            return web.Response(status=400, text="invalid update")
+
+        try:
+            await application.process_update(update)
+        except Exception:
+            # Errors are logged by the application's error handlers
+            return web.Response(status=500, text="error")
+
+        return web.Response(status=200, text="ok")
+
     app = web.Application()
-    app.router.add_post('/webhook', application.webhook_handler())
+    app.router.add_post('/webhook', _webhook_handler)
     app.router.add_get('/ping', _ping_handler)
     app.router.add_get('/metrics', _metrics_handler)
 
