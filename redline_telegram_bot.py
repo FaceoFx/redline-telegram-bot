@@ -1774,7 +1774,8 @@ def start_health_server():
             return
         
         try:
-            port = int(os.environ.get('PORT', '8080'))  # Use 8080 to match Koyeb's default
+            # Use port 8000 for health server to avoid conflict with webhook on 8080
+            port = int(os.environ.get('HEALTH_PORT', '8000'))  # Separate port for health server
             
             # Set SO_REUSEADDR to allow quick restarts
             class ReuseHTTPServer(HTTPServer):
@@ -1811,8 +1812,18 @@ def _start_keepalive_ping(port: int):
                     # External HTTP request (counts as real traffic for Koyeb)
                     try:
                         import requests
-                        # Ensure no double slashes and proper URL construction
-                        ping_url = koyeb_url.rstrip('/') + '/ping'
+                        # Use port 8000 for health checks if webhook is on 8080
+                        health_port = os.environ.get('HEALTH_PORT', '8000')
+                        if ':8080' in koyeb_url and health_port == '8000':
+                            # For webhook on 8080, ping the main domain (assumes port 80/443)
+                            ping_url = koyeb_url.rstrip('/') + '/ping'
+                        else:
+                            # Use the specified port
+                            if ':' not in koyeb_url.split('//')[1]:
+                                ping_url = koyeb_url.rstrip('/') + f':{health_port}/ping'
+                            else:
+                                ping_url = koyeb_url.rstrip('/') + '/ping'
+                        
                         response = requests.get(ping_url, timeout=5)
                         if response.status_code == 200:
                             ping_failures = 0  # Reset failure counter
@@ -4623,8 +4634,8 @@ def main():
     if use_webhook_mode:
         logger.info("🌐 Using WEBHOOK mode (more stable for Koyeb)")
         try:
-            # Extract port from environment
-            port = int(os.environ.get('PORT', '8000'))
+            # Extract port from environment - use same port as health server
+            port = int(os.environ.get('PORT', '8080'))  # Use 8080 to match Koyeb's default
             
             # Set webhook URL
             webhook_url = f"{KOYEB_PUBLIC_URL}/webhook"
@@ -4656,6 +4667,15 @@ def main():
             
             # Recreate application for polling (fresh event loop)
             logger.info("🔄 Recreating application for polling mode...")
+            
+            # Create a fresh event loop for polling
+            try:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            except Exception as loop_err:
+                logger.warning(f"Could not create new event loop: {loop_err}")
+            
             application = (
                 Application.builder()
                 .token(BOT_TOKEN)
