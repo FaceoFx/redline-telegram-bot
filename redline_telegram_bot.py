@@ -198,7 +198,7 @@ KOYEB_PUBLIC_URL = os.environ.get("KOYEB_PUBLIC_URL", "").strip()
 
 # Webhook mode (more stable than polling on Koyeb)
 # Set to 'true' to enable webhook mode (recommended for production)
-USE_WEBHOOK = os.environ.get("USE_WEBHOOK", "false").lower() == "true"
+USE_WEBHOOK = os.environ.get("USE_WEBHOOK", "true").lower() == "true"  # Default to true for better stability
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "").strip()  # Optional security token
 
 # Logging configuration
@@ -257,7 +257,12 @@ result_cache = SimpleCache(ttl=1800)  # 30 min for results
 PROXY_ENABLED = os.environ.get("PROXY_ENABLED", "false").lower() == "true"
 PROXY_VALUE = os.environ.get("PROXY_VALUE", "").strip()
 
-if PROXY_ENABLED and PROXY_VALUE:
+# Disable proxy if it appears to be a placeholder
+if PROXY_VALUE in ("123.45.67.89:8080", "127.0.0.1:8080", "localhost:8080"):
+    PROXY_ENABLED = False
+    PROXY_CONFIG = None
+    logger.warning("⚠️ Placeholder proxy detected - proxy disabled")
+elif PROXY_ENABLED and PROXY_VALUE:
     # Parse proxy URL and create config dict
     if PROXY_VALUE.startswith("socks"):
         # SOCKS5 proxy: socks5://host:port
@@ -1769,7 +1774,7 @@ def start_health_server():
             return
         
         try:
-            port = int(os.environ.get('PORT', '8000'))
+            port = int(os.environ.get('PORT', '8080'))  # Use 8080 to match Koyeb's default
             
             # Set SO_REUSEADDR to allow quick restarts
             class ReuseHTTPServer(HTTPServer):
@@ -1806,7 +1811,9 @@ def _start_keepalive_ping(port: int):
                     # External HTTP request (counts as real traffic for Koyeb)
                     try:
                         import requests
-                        response = requests.get(f"{koyeb_url}/ping", timeout=5)
+                        # Ensure no double slashes and proper URL construction
+                        ping_url = koyeb_url.rstrip('/') + '/ping'
+                        response = requests.get(ping_url, timeout=5)
                         if response.status_code == 200:
                             ping_failures = 0  # Reset failure counter
                             if first_ping:
@@ -4799,8 +4806,8 @@ if __name__ == '__main__':
             
             # Check if this is likely a Koyeb sleep/restart scenario
             logger.info("🔄 Bot stopped cleanly - normal for Koyeb sleep/restart")
-            logger.info("⏳ Waiting 3 seconds before restarting...")
-            time.sleep(3)  # Brief pause before restart
+            logger.info("⏳ Waiting 10 seconds before restarting...")
+            time.sleep(10)  # Longer pause for Koyeb to fully restore
             
         except KeyboardInterrupt:
             logger.info("\n🛑 Bot stopped by user (Ctrl+C)")
