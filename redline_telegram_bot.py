@@ -4630,6 +4630,14 @@ def main():
     
     # Determine if we should use webhook or polling
     use_webhook_mode = USE_WEBHOOK and KOYEB_PUBLIC_URL
+    # Permanently disable webhook for this runtime if a previous failure occurred
+    try:
+        _webhook_disable_flag = os.path.join(TEMP_DIR, 'disable_webhook.flag')
+        if os.path.exists(_webhook_disable_flag):
+            logger.warning("⚠️ Webhook previously failed in this runtime. Disabling webhook mode until next deploy/restart.")
+            use_webhook_mode = False
+    except Exception:
+        pass
     
     if use_webhook_mode:
         logger.info("🌐 Using WEBHOOK mode (more stable for Koyeb)")
@@ -4664,6 +4672,12 @@ def main():
             logger.error(f"❌ Webhook mode failed: {e}")
             logger.warning("⚠️ Falling back to polling mode...")
             use_webhook_mode = False
+            # Drop a flag so subsequent restarts don't retry webhook endlessly
+            try:
+                with open(os.path.join(TEMP_DIR, 'disable_webhook.flag'), 'w', encoding='utf-8') as _f:
+                    _f.write(f"disabled at {datetime.now().isoformat()} due to: {e}\n")
+            except Exception:
+                pass
             
             # Recreate application for polling (fresh event loop)
             logger.info("🔄 Recreating application for polling mode...")
