@@ -26,7 +26,17 @@ except Exception:
     HAS_AIOHTTP = False
 from datetime import datetime, timezone
 from typing import List, Set, Tuple, Dict
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential_jitter
+    HAS_TENACITY = True
+except Exception:
+    HAS_TENACITY = False
 from urllib.parse import urlparse, parse_qs
+try:
+    from aiolimiter import AsyncLimiter
+    HAS_AIOLIMITER = True
+except Exception:
+    HAS_AIOLIMITER = False
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -200,6 +210,7 @@ if not BOT_TOKEN:
 # Set this to your Koyeb app URL (e.g., https://your-app-name.koyeb.app)
 # If not set, will fall back to internal pings (less effective)
 KOYEB_PUBLIC_URL = os.environ.get("KOYEB_PUBLIC_URL", "").strip()
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
 
 # Webhook mode (more stable than polling on Koyeb)
 # Set to 'true' to enable webhook mode (recommended for production)
@@ -248,6 +259,14 @@ if LOG_JSON:
     for _h in logging.getLogger().handlers:
         _h.setFormatter(_fmt)
 
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.0)
+        logger.info("✅ Sentry initialized")
+    except Exception as _se:
+        logger.warning(f"Sentry init failed: {_se}")
+
 # ============================================
 # AIOHTTP helpers for unified webhook + ping
 # ============================================
@@ -270,6 +289,14 @@ async def _metrics_handler(request: web.Request) -> web.Response:
             "users": len(bot_stats.users_served),
             "time": int(time.time()),
         }
+        try:
+            data.update({
+                "updates_received": _bot_health_status.get('updates_received'),
+                "last_update_ts": _bot_health_status.get('last_update'),
+                "is_healthy": _bot_health_status.get('is_healthy'),
+            })
+        except Exception:
+            pass
         return web.json_response(data)
     except Exception:
         return web.Response(status=200, text="{}")
@@ -286,12 +313,23 @@ async def _maintenance_job(context):
 
 async def _start_aiohttp_webhook(application: Application, webhook_url: str, port: int, secret: str | None):
     await application.initialize()
-    await application.bot.set_webhook(
-        url=webhook_url,
-        secret_token=secret if secret else None,
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
-    )
+    if HAS_TENACITY:
+        @retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(exp_base=0.5, max=3))
+        async def _do_set_webhook():
+            await application.bot.set_webhook(
+                url=webhook_url,
+                secret_token=secret if secret else None,
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES,
+            )
+        await _do_set_webhook()
+    else:
+        await application.bot.set_webhook(
+            url=webhook_url,
+            secret_token=secret if secret else None,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+        )
 
     app = web.Application()
     app.router.add_post('/webhook', application.webhook_handler())
@@ -351,6 +389,9 @@ MAX_MEMORY_MB = int(os.environ.get('MAX_MEMORY_MB', 300))  # 300MB RAM limit
 # Performance settings
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '8'))  # Reduced for Koyeb
 PROCESSING_TIMEOUT = 300  # 5 minutes max per operation
+MAX_CONCURRENCY = int(os.environ.get('MAX_CONCURRENCY', '4'))
+PER_USER_RPS = float(os.environ.get('PER_USER_RPS', '0.5'))  # tokens per second per user
+PER_USER_BURST = int(os.environ.get('PER_USER_BURST', '3'))
 
 # Initialize global cache (1 hour TTL)
 m3u_cache = SimpleCache(ttl=3600)
@@ -681,6 +722,60 @@ def log_errors(func):
             logger.error("="*70)
             raise  # Re-raise so error_handler can catch it
     return wrapper
+
+# ============================================
+# GLOBAL CONCURRENCY AND PER-USER LIMITERS
+# ============================================
+
+_global_semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+_user_limiters: Dict[int, object] = {}
+
+def _get_user_id(update: Update) -> int | None:
+    try:
+        if update.effective_user and update.effective_user.id:
+            return int(update.effective_user.id)
+        if update.effective_chat and update.effective_chat.id:
+            return int(update.effective_chat.id)
+    except Exception:
+        return None
+    return None
+
+async def _acquire_user_limit(user_id: int):
+    if not HAS_AIOLIMITER or user_id is None or PER_USER_RPS <= 0:
+        return
+    lim = _user_limiters.get(user_id)
+    if lim is None:
+        # tokens per second -> limiter(permits per interval)
+        interval = 1
+        lim = AsyncLimiter(max(1, int(PER_USER_RPS * interval)), interval)
+        _user_limiters[user_id] = lim
+    await lim.acquire()
+
+def wrap_handler(func, heavy: bool = True):
+    @log_errors
+    async def _wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = _get_user_id(update)
+        await _acquire_user_limit(user_id)
+        # File size guard for documents
+        try:
+            msg = getattr(update, 'message', None)
+            if msg and getattr(msg, 'document', None):
+                doc = msg.document
+                if getattr(doc, 'file_size', 0) and doc.file_size > MAX_FILE_SIZE:
+                    try:
+                        await msg.reply_text(
+                            f"❌ File too large. Max allowed is {format_file_size(MAX_FILE_SIZE)}.")
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            pass
+        if heavy:
+            async with _global_semaphore:
+                return await func(update, context, *args, **kwargs)
+        else:
+            return await func(update, context, *args, **kwargs)
+    return _wrapped
 
 # ============================================
 # RATE LIMITER
@@ -4585,6 +4680,7 @@ def main():
     application = (
         Application.builder()
         .token(BOT_TOKEN)
+        .concurrent_updates(False)
         .get_updates_read_timeout(30)
         .get_updates_write_timeout(30)
         .get_updates_connect_timeout(30)
@@ -4806,6 +4902,7 @@ def main():
             application = (
                 Application.builder()
                 .token(BOT_TOKEN)
+                .concurrent_updates(False)
                 .get_updates_read_timeout(30)
                 .get_updates_write_timeout(30)
                 .get_updates_connect_timeout(30)
