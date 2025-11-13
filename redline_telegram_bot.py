@@ -271,13 +271,13 @@ if SENTRY_DSN:
 # AIOHTTP helpers for unified webhook + ping
 # ============================================
 
-async def _ping_handler(request: web.Request) -> web.Response:
+async def _ping_handler(request: 'web.Request') -> 'web.Response':
     try:
         return web.json_response({"ok": True, "time": int(time.time())})
     except Exception:
         return web.Response(status=200, text="ok")
 
-async def _metrics_handler(request: web.Request) -> web.Response:
+async def _metrics_handler(request: 'web.Request') -> 'web.Response':
     try:
         data = {
             "uptime": bot_stats.get_uptime(),
