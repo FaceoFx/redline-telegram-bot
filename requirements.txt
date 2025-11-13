@@ -1,3 +1,7 @@
-python-telegram-bot[webhooks]==20.7
+python-telegram-bot[webhooks,job-queue]==20.7
+aiohttp>=3.9.0
 requests>=2.31.0
 httpx>=0.24.0
+tenacity>=8.2.0
+aiolimiter>=1.1.0
+sentry-sdk>=1.40.0
