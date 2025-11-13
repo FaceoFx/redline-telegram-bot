@@ -200,6 +200,15 @@ KOYEB_PUBLIC_URL = os.environ.get("KOYEB_PUBLIC_URL", "").strip()
 # Set to 'true' to enable webhook mode (recommended for production)
 USE_WEBHOOK = os.environ.get("USE_WEBHOOK", "true").lower() == "true"  # Default to true for better stability
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "").strip()  # Optional security token
+# Strict webhook behavior: if true and webhook fails, exit so platform restarts the instance
+# Values: 'true' | 'false' | 'auto' (auto => true when KOYEB_PUBLIC_URL is set)
+_strict_env = os.environ.get("KOYEB_STRICT_WEBHOOK", "auto").strip().lower()
+if _strict_env == "true":
+    KOYEB_STRICT_WEBHOOK = True
+elif _strict_env == "false":
+    KOYEB_STRICT_WEBHOOK = False
+else:
+    KOYEB_STRICT_WEBHOOK = bool(os.environ.get("KOYEB_PUBLIC_URL", "").strip())
 
 # Logging configuration
 logging.basicConfig(
@@ -4670,6 +4679,10 @@ def main():
             
         except Exception as e:
             logger.error(f"❌ Webhook mode failed: {e}")
+            if KOYEB_STRICT_WEBHOOK:
+                logger.error("❌ Strict webhook mode enabled: exiting for platform restart")
+                # Exit the process so Koyeb restarts a fresh instance
+                sys.exit(1)
             logger.warning("⚠️ Falling back to polling mode...")
             use_webhook_mode = False
             # Drop a flag so subsequent restarts don't retry webhook endlessly
