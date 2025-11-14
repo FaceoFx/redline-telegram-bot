@@ -388,23 +388,40 @@ async def _maintenance_job(context):
 
 async def _start_aiohttp_webhook(application: Application, webhook_url: str, port: int, secret: str | None):
     await application.initialize()
-    if HAS_TENACITY:
-        @retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(exp_base=0.5, max=3))
-        async def _do_set_webhook():
+    
+    # Set webhook with Telegram
+    logger.info(f"📡 Registering webhook with Telegram: {webhook_url.split('?')[0]}")
+    try:
+        if HAS_TENACITY:
+            @retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(exp_base=0.5, max=3))
+            async def _do_set_webhook():
+                await application.bot.set_webhook(
+                    url=webhook_url,
+                    secret_token=secret if secret else None,
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES,
+                )
+            await _do_set_webhook()
+        else:
             await application.bot.set_webhook(
                 url=webhook_url,
                 secret_token=secret if secret else None,
                 drop_pending_updates=True,
                 allowed_updates=Update.ALL_TYPES,
             )
-        await _do_set_webhook()
-    else:
-        await application.bot.set_webhook(
-            url=webhook_url,
-            secret_token=secret if secret else None,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES,
-        )
+        
+        # Verify webhook was set correctly
+        webhook_info = await application.bot.get_webhook_info()
+        logger.info(f"✅ Webhook registered successfully!")
+        logger.info(f"   URL: {webhook_info.url}")
+        logger.info(f"   Pending updates: {webhook_info.pending_update_count}")
+        if webhook_info.last_error_date:
+            logger.warning(f"   ⚠️ Last error: {webhook_info.last_error_message}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to set webhook: {e}")
+        logger.error("   Bot will not receive updates until webhook is set correctly!")
+        raise
 
     async def _webhook_handler(request: 'web.Request') -> 'web.Response':
         try:
@@ -425,10 +442,27 @@ async def _start_aiohttp_webhook(application: Application, webhook_url: str, por
 
         return web.Response(status=200, text="ok")
 
+    async def _webhook_status_handler(request: 'web.Request') -> 'web.Response':
+        """Show webhook status for debugging"""
+        try:
+            webhook_info = await application.bot.get_webhook_info()
+            status = {
+                "webhook_url": webhook_info.url,
+                "pending_updates": webhook_info.pending_update_count,
+                "last_error_date": webhook_info.last_error_date,
+                "last_error_message": webhook_info.last_error_message,
+                "max_connections": webhook_info.max_connections,
+                "allowed_updates": webhook_info.allowed_updates or []
+            }
+            return web.json_response(status)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+    
     app = web.Application()
     app.router.add_post('/webhook', _webhook_handler)
     app.router.add_get('/ping', _ping_handler)
     app.router.add_get('/metrics', _metrics_handler)
+    app.router.add_get('/webhook_status', _webhook_status_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
