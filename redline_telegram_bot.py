@@ -4710,18 +4710,7 @@ def main():
     # Start health server for platform TCP checks
     start_health_server()
 
-    # External /ping self-check (does not crash bot, only logs problems)
-    if KOYEB_PUBLIC_URL and HAS_REQUESTS:
-        try:
-            import requests
-            ping_url = KOYEB_PUBLIC_URL.rstrip('/') + '/ping'
-            resp = requests.get(ping_url, timeout=5)
-            if resp.status_code == 200:
-                logger.info(f"✅ External /ping reachable at {ping_url}")
-            else:
-                logger.warning(f"⚠️ External /ping returned HTTP {resp.status_code} for {ping_url}")
-        except Exception as _e:
-            logger.warning(f"⚠️ External /ping self-check failed for {KOYEB_PUBLIC_URL}: {_e}")
+    # Keep-alive will handle external pings after startup
 
     # Add handlers
     application.add_handler(CommandHandler("redline", start))
@@ -4816,29 +4805,7 @@ def main():
     _bot_health_status['is_healthy'] = True
     _bot_health_status['updates_received'] = 0
     
-    # Activity monitor to detect Koyeb sleep
-    def activity_monitor():
-        """Monitor for signs of Koyeb sleep (no activity for 5+ minutes)"""
-        while True:
-            try:
-                time.sleep(60)  # Check every minute
-                idle_time = time.time() - _bot_health_status['last_update']
-                
-                if idle_time > 360:  # 6 minutes of no activity
-                    logger.warning(f"⚠️ No activity for {int(idle_time/60)} minutes - possible Koyeb sleep approaching")
-                    _bot_health_status['is_healthy'] = False
-                elif _bot_health_status['is_healthy'] == False and idle_time < 120:
-                    # Recovered from unhealthy state
-                    logger.info("✅ Bot recovered - receiving updates again")
-                    _bot_health_status['is_healthy'] = True
-            except Exception:
-                pass
-    
-    # Start activity monitor
-    monitor_thread = threading.Thread(target=activity_monitor, daemon=True)
-    monitor_thread.start()
-    
-    # Update activity on each update
+    # Update activity on each update (for metrics only, no spam)
     async def track_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _bot_health_status['last_update'] = time.time()
         _bot_health_status['updates_received'] += 1
