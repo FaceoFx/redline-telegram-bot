@@ -227,12 +227,31 @@ else:
     KOYEB_STRICT_WEBHOOK = bool(os.environ.get("KOYEB_PUBLIC_URL", "").strip())
 LOG_JSON = os.environ.get("LOG_JSON", "false").strip().lower() == "true"
 
-# Logging configuration
+# Logging configuration with daily rotation
+from logging.handlers import TimedRotatingFileHandler
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Add rotating file handler for persistent logs (daily rotation, keep 7 days)
+try:
+    log_dir = os.path.join(os.path.dirname(__file__) or '.', 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    file_handler = TimedRotatingFileHandler(
+        filename=os.path.join(log_dir, 'bot.log'),
+        when='midnight',
+        interval=1,
+        backupCount=7,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logging.getLogger().addHandler(file_handler)
+    logger.info("✅ Log file rotation enabled (daily, 7 days retention)")
+except Exception as e:
+    logger.warning(f"⚠️ Could not setup file logging: {e}")
 
 # Suppress verbose third-party logs
 logging.getLogger('httpx').setLevel(logging.WARNING)
@@ -266,6 +285,62 @@ if SENTRY_DSN:
         logger.info("✅ Sentry initialized")
     except Exception as _se:
         logger.warning(f"Sentry init failed: {_se}")
+
+# ============================================
+# HTTP Session Pooling for Keep-Alive
+# ============================================
+
+# Reusable HTTP session for keep-alive pings (connection pooling)
+_http_session = None
+_session_lock = threading.Lock()
+
+def _get_http_session():
+    """Get or create a persistent HTTP session for keep-alive (connection pooling)"""
+    global _http_session
+    if _http_session is None:
+        with _session_lock:
+            if _http_session is None and HAS_REQUESTS:
+                import requests
+                _http_session = requests.Session()
+                # Configure connection pooling
+                adapter = requests.adapters.HTTPAdapter(
+                    pool_connections=2,
+                    pool_maxsize=5,
+                    max_retries=3,
+                    pool_block=False
+                )
+                _http_session.mount('http://', adapter)
+                _http_session.mount('https://', adapter)
+                logger.debug("✅ HTTP session pool created for keep-alive")
+    return _http_session
+
+# ============================================
+# Graceful Shutdown Handler
+# ============================================
+
+_shutdown_requested = False
+
+def _request_shutdown(signum=None, frame=None):
+    """Signal handler for graceful shutdown"""
+    global _shutdown_requested
+    if not _shutdown_requested:
+        _shutdown_requested = True
+        logger.info("🛑 Shutdown signal received - cleaning up...")
+        # Close HTTP session if exists
+        if _http_session:
+            try:
+                _http_session.close()
+                logger.info("✅ HTTP session closed")
+            except Exception:
+                pass
+
+# Register signal handlers for graceful shutdown
+try:
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+    logger.info("✅ Graceful shutdown handlers registered")
+except Exception as e:
+    logger.warning(f"⚠️ Could not register shutdown handlers: {e}")
 
 # ============================================
 # AIOHTTP helpers for unified webhook + ping
@@ -2029,10 +2104,10 @@ def _start_keepalive_ping(port: int):
                 
                 if koyeb_url and HAS_REQUESTS:
                     try:
-                        import requests
+                        session = _get_http_session()
                         ping_url = koyeb_url.rstrip('/') + '/ping'
-                        response = requests.get(ping_url, timeout=5)
-                        if response.status_code == 200:
+                        response = session.get(ping_url, timeout=5) if session else None
+                        if response and response.status_code == 200:
                             ping_failures = 0
                             if first_ping:
                                 logger.info("✅ Keep-alive system active (2min aggressive mode)")
@@ -4685,17 +4760,26 @@ def main():
     # Create application with proxy support (if Telegram is blocked)
     # Uncomment the proxy lines below if you need to use a proxy
     
-    # Option 1: Without proxy (normal)
+    # Option 1: Without proxy (normal) - Enhanced for 24/7 stability
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .concurrent_updates(False)
-        .get_updates_read_timeout(30)
-        .get_updates_write_timeout(30)
-        .get_updates_connect_timeout(30)
-        .get_updates_pool_timeout(30)
+        # Longer timeouts for unstable networks
+        .get_updates_read_timeout(45)
+        .get_updates_write_timeout(45)
+        .get_updates_connect_timeout(45)
+        .get_updates_pool_timeout(45)
+        # General request timeouts
+        .read_timeout(30)
+        .write_timeout(30)
+        .connect_timeout(30)
+        .pool_timeout(30)
+        # Connection pooling for better stability
+        .connection_pool_size(8)
         .build()
     )
+    logger.info("✅ Bot application built with enhanced timeout & connection pool settings")
     
     # Option 2: With HTTP proxy (if Telegram blocked - uncomment these)
     # from telegram.request import HTTPXRequest
@@ -4746,23 +4830,48 @@ def main():
     async def _cleanup_temp_cb(context: ContextTypes.DEFAULT_TYPE):
         try:
             cutoff = time.time() - 15 * 60
+            cleaned_count = 0
             for name in os.listdir(TEMP_DIR):
                 p = os.path.join(TEMP_DIR, name)
                 try:
                     if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
                         os.remove(p)
+                        cleaned_count += 1
                 except Exception:
                     continue
             
             # Clean expired cache entries
             m3u_cache.clear_expired()
             result_cache.clear_expired()
+            
+            # Log cleanup stats (debug level to avoid spam)
+            if cleaned_count > 0:
+                logger.debug(f"🧹 Cleanup: removed {cleaned_count} old temp files")
+            
+            # Force garbage collection periodically to free memory
+            import gc
+            gc.collect()
+            
+        except Exception as e:
+            logger.debug(f"Cleanup error: {e}")
+    
+    # Periodic health stats logging (every hour)
+    async def _log_health_stats(context: ContextTypes.DEFAULT_TYPE):
+        try:
+            uptime = time.time() - _bot_health_status.get('start_time', time.time())
+            uptime_hours = int(uptime / 3600)
+            uptime_mins = int((uptime % 3600) / 60)
+            updates = _bot_health_status.get('updates_received', 0)
+            
+            logger.info(f"📊 Health: Uptime {uptime_hours}h {uptime_mins}m | Updates: {updates} | Users: {len(bot_stats.users_served)}")
         except Exception:
             pass
 
     # Schedule cleanup job if JobQueue is available
     if application.job_queue:
         application.job_queue.run_repeating(_cleanup_temp_cb, interval=600, first=120)
+        application.job_queue.run_repeating(_log_health_stats, interval=3600, first=3600)  # Every hour
+        logger.info("✅ Periodic maintenance jobs scheduled (cleanup: 10min, health: 1h)")
     else:
         logger.warning("⚠️ JobQueue not available. Cleanup tasks disabled.")
     
@@ -4924,8 +5033,11 @@ def main():
     
     # Fallback to polling if webhook not enabled or failed
     if not use_webhook_mode:
-        logger.info("🔄 Using POLLING mode")
-        for attempt in range(max_retries):
+        logger.info("🔄 Using POLLING mode with auto-retry")
+        retry_count = 0
+        max_continuous_retries = 5
+        
+        while retry_count < max_continuous_retries:
             try:
                 application.run_polling(
                     allowed_updates=Update.ALL_TYPES,
@@ -4935,19 +5047,34 @@ def main():
                 logger.warning("⚠️ Polling loop exited normally - likely Koyeb container shutdown")
                 logger.warning("🔄 This is expected when Koyeb sleeps or redeploys the service")
                 break
+                
             except telegram.error.Conflict as e:
-                if attempt < max_retries - 1:
-                    wait_time = 10 * (attempt + 1)
-                    logger.warning(f"⚠️ Conflict on start (attempt {attempt+1}/{max_retries}). Waiting {wait_time}s...")
-                    time.sleep(wait_time)
-                else:
-                    logger.error("="*70)
-                    logger.error(f"❌ FAILED TO START after {max_retries} attempts")
-                    logger.error(f"Error: {e}")
-                    logger.error("📍 TRACEBACK:")
-                    logger.error(traceback.format_exc())
-                    logger.error("="*70)
+                retry_count += 1
+                # Exponential backoff: 5s, 10s, 20s, 40s, 80s
+                wait_time = min(5 * (2 ** retry_count), 120)
+                logger.warning(f"⚠️ Conflict detected (retry {retry_count}/{max_continuous_retries})")
+                logger.warning(f"   Waiting {wait_time}s before retry (exponential backoff)...")
+                time.sleep(wait_time)
+                
+                if retry_count >= max_continuous_retries:
+                    logger.error("❌ Max retries reached for conflict resolution")
+                    logger.error(f"   Another bot instance may be running with token: {BOT_TOKEN[:10]}...")
                     raise
+                    
+            except (telegram.error.NetworkError, telegram.error.TimedOut) as e:
+                retry_count += 1
+                wait_time = min(10 * retry_count, 60)
+                logger.warning(f"⚠️ Network error (retry {retry_count}/{max_continuous_retries}): {e}")
+                logger.warning(f"   Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                
+                if retry_count < max_continuous_retries:
+                    logger.info("🔄 Attempting to restart polling...")
+                    continue
+                else:
+                    logger.error("❌ Max network error retries reached")
+                    raise
+                    
             except Exception as e:
                 logger.error("="*70)
                 logger.error("❌ UNEXPECTED ERROR DURING POLLING")
@@ -4956,7 +5083,15 @@ def main():
                 logger.error("📍 FULL TRACEBACK:")
                 logger.error(traceback.format_exc())
                 logger.error("="*70)
-                raise
+                
+                # For unknown errors, retry once with backoff
+                if retry_count < 2:
+                    retry_count += 1
+                    logger.warning(f"🔄 Attempting recovery (retry {retry_count}/2)...")
+                    time.sleep(30)
+                    continue
+                else:
+                    raise
 
 if __name__ == '__main__':
     # Startup validation
