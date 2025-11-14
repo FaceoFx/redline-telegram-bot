@@ -5341,18 +5341,6 @@ def main():
     # Fallback to polling if webhook not enabled or failed
     if not use_webhook_mode:
         logger.info("🔄 Using POLLING mode with auto-retry")
-        
-        # Pre-flight health check: verify bot token and connectivity
-        logger.info("🔍 Running pre-flight health check...")
-        try:
-            bot_info = asyncio.run(application.bot.get_me())
-            logger.info(f"✅ Bot connected: @{bot_info.username} ({bot_info.first_name})")
-            logger.info(f"✅ Bot ID: {bot_info.id}")
-        except Exception as e:
-            logger.error(f"❌ Pre-flight check FAILED: {e}")
-            logger.error("   Check your BOT_TOKEN and internet connection")
-            raise
-        
         retry_count = 0
         max_continuous_retries = 5
         
