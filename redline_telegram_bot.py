@@ -2018,33 +2018,22 @@ def _start_keepalive_ping(port: int):
         import time
         first_ping = True
         ping_failures = 0
+        last_error_log_ts = 0.0
         
         while True:
             try:
                 time.sleep(120)  # 2 minutes (MORE AGGRESSIVE)
                 
                 # Try to ping our own external URL to generate "real" traffic
-                koyeb_url = os.environ.get('KOYEB_PUBLIC_URL', '')
+                koyeb_url = KOYEB_PUBLIC_URL
                 
                 if koyeb_url and HAS_REQUESTS:
-                    # External HTTP request (counts as real traffic for Koyeb)
                     try:
                         import requests
-                        # Use port 8000 for health checks if webhook is on 8080
-                        health_port = os.environ.get('HEALTH_PORT', '8000')
-                        if ':8080' in koyeb_url and health_port == '8000':
-                            # For webhook on 8080, ping the main domain (assumes port 80/443)
-                            ping_url = koyeb_url.rstrip('/') + '/ping'
-                        else:
-                            # Use the specified port
-                            if ':' not in koyeb_url.split('//')[1]:
-                                ping_url = koyeb_url.rstrip('/') + f':{health_port}/ping'
-                            else:
-                                ping_url = koyeb_url.rstrip('/') + '/ping'
-                        
+                        ping_url = koyeb_url.rstrip('/') + '/ping'
                         response = requests.get(ping_url, timeout=5)
                         if response.status_code == 200:
-                            ping_failures = 0  # Reset failure counter
+                            ping_failures = 0
                             if first_ping:
                                 logger.info("✅ Keep-alive system active (2min aggressive mode)")
                                 first_ping = False
@@ -2055,13 +2044,14 @@ def _start_keepalive_ping(port: int):
                     except Exception as e:
                         ping_failures += 1
                         logger.debug(f"Keep-alive external failed: {e}")
-                        # Fallback to internal ping
                         _internal_ping(port)
-                        
-                    # Alert if too many failures
+                    
                     if ping_failures >= 5:
-                        logger.error(f"❌ Keep-alive failed {ping_failures} times - bot may sleep!")
-                        ping_failures = 0  # Reset to avoid spam
+                        now_ts = time.time()
+                        if now_ts - last_error_log_ts > 600:
+                            logger.error(f"❌ Keep-alive failed {ping_failures} times - bot may sleep!")
+                            last_error_log_ts = now_ts
+                        ping_failures = 0
                 else:
                     # Fallback to internal socket ping
                     _internal_ping(port)
@@ -4719,6 +4709,19 @@ def main():
     
     # Start health server for platform TCP checks
     start_health_server()
+
+    # External /ping self-check (does not crash bot, only logs problems)
+    if KOYEB_PUBLIC_URL and HAS_REQUESTS:
+        try:
+            import requests
+            ping_url = KOYEB_PUBLIC_URL.rstrip('/') + '/ping'
+            resp = requests.get(ping_url, timeout=5)
+            if resp.status_code == 200:
+                logger.info(f"✅ External /ping reachable at {ping_url}")
+            else:
+                logger.warning(f"⚠️ External /ping returned HTTP {resp.status_code} for {ping_url}")
+        except Exception as _e:
+            logger.warning(f"⚠️ External /ping self-check failed for {KOYEB_PUBLIC_URL}: {_e}")
 
     # Add handlers
     application.add_handler(CommandHandler("redline", start))
