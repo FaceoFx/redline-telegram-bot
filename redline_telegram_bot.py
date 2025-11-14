@@ -418,6 +418,21 @@ async def _start_aiohttp_webhook(application: Application, webhook_url: str, por
         if webhook_info.last_error_date:
             logger.warning(f"   ⚠️ Last error: {webhook_info.last_error_message}")
         
+        # Test if webhook is actually reachable from internet
+        if HAS_REQUESTS:
+            try:
+                import requests
+                test_url = KOYEB_PUBLIC_URL.rstrip('/') + '/ping'
+                test_resp = requests.get(test_url, timeout=10)
+                if test_resp.status_code == 200:
+                    logger.info(f"✅ Webhook endpoint is publicly reachable")
+                else:
+                    logger.warning(f"⚠️ Webhook endpoint returned {test_resp.status_code}")
+                    logger.warning("   Telegram might not be able to reach the webhook!")
+            except Exception as test_err:
+                logger.warning(f"⚠️ Could not verify webhook reachability: {test_err}")
+                logger.warning("   If bot doesn't respond, webhook might be unreachable")
+        
     except Exception as e:
         logger.error(f"❌ Failed to set webhook: {e}")
         logger.error("   Bot will not receive updates until webhook is set correctly!")
@@ -750,10 +765,17 @@ SETTINGS_PATH = os.path.join(TEMP_DIR, 'settings.json')
 GLOBAL_SETTINGS = {
     'proxy_enabled': False,
     'proxy_value': '',
+    'proxy_source_url': '',      # Custom proxy API source URL
     'include_channels_auto': False,
     'workers': 12,
     'm3u_limit': 1000,
     'combo_limit': 500,
+    # M3U Advanced Options
+    'm3u_fast_mode': True,       # Fast Mode (skip full M3U download)
+    'm3u_use_proxy': False,      # Use proxy for M3U checks
+    'm3u_skip_preflight': False, # Skip preflight OPTIONS request
+    'm3u_bypass_mode': False,    # Cloudflare/DDoS-Guard bypass
+    'm3u_all_user_agents': True, # Try multiple User-Agents
 }
 
 def load_settings():
@@ -774,11 +796,58 @@ def save_settings():
     except Exception:
         pass
 
+def fetch_auto_proxy() -> str:
+    """Fetch working proxy from free proxy API"""
+    if not HAS_REQUESTS:
+        return ""
+    try:
+        # Check if custom proxy source URL is set
+        sources = []
+        custom_source = GLOBAL_SETTINGS.get('proxy_source_url', '').strip()
+        if custom_source:
+            sources.append(custom_source)
+        
+        # Add default proxy sources
+        sources.extend([
+            "https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all",
+            "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=3000&country=all&format=textplain",
+            "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=3000&country=all&format=textplain",
+            "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=3000&country=all&ssl=all&format=textplain",
+            "https://www.proxy-list.download/api/v1/get?type=http",
+        ])
+        
+        for source in sources:
+            try:
+                r = Net.get(source, timeout=5)
+                if r.status_code == 200:
+                    proxies = r.text.strip().split('\n')
+                    # Return first proxy
+                    for p in proxies:
+                        p = p.strip()
+                        if p and ':' in p:
+                            logger.info(f"Auto-fetched proxy: {p}")
+                            return p
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug(f"Auto proxy fetch failed: {e}")
+    return ""
+
 def get_proxies() -> dict | None:
+    """Get proxy for requests. Auto-fetch if M3U proxy enabled but no manual proxy set."""
+    # Check if proxy is manually enabled in Settings
     if GLOBAL_SETTINGS.get('proxy_enabled') and GLOBAL_SETTINGS.get('proxy_value'):
         pv = GLOBAL_SETTINGS.get('proxy_value').strip()
         scheme = 'http' if pv.startswith(('http://','socks5://')) else 'http'
         return {'http': pv if '://' in pv else f'{scheme}://{pv}', 'https': pv if '://' in pv else f'{scheme}://{pv}'}
+    
+    # Check if M3U proxy is enabled but no manual proxy set
+    if GLOBAL_SETTINGS.get('m3u_use_proxy'):
+        # Try to auto-fetch a proxy
+        auto_proxy = fetch_auto_proxy()
+        if auto_proxy:
+            return {'http': f'http://{auto_proxy}', 'https': f'http://{auto_proxy}'}
+    
     return None
 
 load_settings()
@@ -1103,10 +1172,48 @@ class M3UProbe:
         if not (base and username and password):
             return False, {}, "credentials not found in URL"
         api = M3UProbe._api_url(base, username, password)
+        
+        # Apply M3U settings
+        use_proxy = GLOBAL_SETTINGS.get('m3u_use_proxy', False)
+        all_ua = GLOBAL_SETTINGS.get('m3u_all_user_agents', True)
+        bypass_mode = GLOBAL_SETTINGS.get('m3u_bypass_mode', False)
+        
+        # Use proxy from settings if enabled
+        if use_proxy and not proxies:
+            proxies = get_proxies()
+        
+        # User-Agent rotation
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "VLC/3.0.18 LibVLC/3.0.18"
+        ] if all_ua else ["Mozilla/5.0"]
+        
+        headers = {"User-Agent": user_agents[0]}
+        if bypass_mode:
+            headers.update({
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            })
+        
         try:
-            r = Net.get(api, timeout=timeout, allow_redirects=True, proxies=proxies, headers={"User-Agent": "Mozilla/5.0"})
+            r = Net.get(api, timeout=timeout, allow_redirects=True, proxies=proxies, headers=headers)
             if r.status_code != 200:
-                return False, {}, f"HTTP {r.status_code}"
+                # Try other User-Agents if first one fails
+                if all_ua and len(user_agents) > 1:
+                    for ua in user_agents[1:]:
+                        headers["User-Agent"] = ua
+                        try:
+                            r = Net.get(api, timeout=timeout, allow_redirects=True, proxies=proxies, headers=headers)
+                            if r.status_code == 200:
+                                break
+                        except Exception:
+                            continue
+                if r.status_code != 200:
+                    return False, {}, f"HTTP {r.status_code}"
             data = r.json() if r.text.strip().startswith('{') else {}
         except Exception as e:
             return False, {}, str(e)
@@ -1218,6 +1325,54 @@ class M3UProbe:
         lines.append(f" M3U: {info.get('m3u','-')}")
         lines.append(f" API: {info.get('api','-')}")
         return "\n".join(lines)
+
+    @staticmethod
+    def fetch_first_group(m3u_url: str, timeout: int = 5, proxies: dict | None = None, max_kb: int = 256) -> str:
+        """Fetch M3U and count channels. Returns channel count or empty string on error."""
+        # Check Fast Mode setting
+        fast_mode = GLOBAL_SETTINGS.get('m3u_fast_mode', True)
+        if fast_mode:
+            # Skip M3U download in Fast Mode
+            return ""
+        
+        if not HAS_REQUESTS or not m3u_url:
+            return ""
+        
+        try:
+            # Apply M3U settings
+            use_proxy = GLOBAL_SETTINGS.get('m3u_use_proxy', False)
+            all_ua = GLOBAL_SETTINGS.get('m3u_all_user_agents', True)
+            
+            if use_proxy and not proxies:
+                proxies = get_proxies()
+            
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "VLC/3.0.18 LibVLC/3.0.18"
+            ] if all_ua else ["Mozilla/5.0"]
+            
+            headers = {"User-Agent": user_agents[0]}
+            
+            # Stream download with size limit
+            r = Net.get(m3u_url, timeout=timeout, stream=True, proxies=proxies, headers=headers)
+            if r.status_code != 200:
+                return ""
+            
+            # Read up to max_kb
+            max_bytes = max_kb * 1024
+            content = b""
+            for chunk in r.iter_content(chunk_size=8192):
+                content += chunk
+                if len(content) >= max_bytes:
+                    break
+            
+            # Count #EXTINF lines (each represents a channel)
+            text = content.decode('utf-8', errors='ignore')
+            count = text.count('#EXTINF')
+            return str(count) if count > 0 else ""
+            
+        except Exception:
+            return ""
 
 class UpProbe:
     @staticmethod
@@ -3043,6 +3198,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔌 Proxy ON/OFF", callback_data="settings_toggle_proxy"), InlineKeyboardButton("✏️ Set Proxy", callback_data="settings_set_proxy")],
             [InlineKeyboardButton("📺 Channels (Auto) ON/OFF", callback_data="settings_toggle_channels")],
+            [InlineKeyboardButton("🎬 M3U Options", callback_data="settings_m3u_options")],
             [InlineKeyboardButton("👷 Workers: 6", callback_data="settings_workers_6"), InlineKeyboardButton("12", callback_data="settings_workers_12"), InlineKeyboardButton("20", callback_data="settings_workers_20")],
             [InlineKeyboardButton("⬅️ Back", callback_data="back")]
         ])
@@ -3083,6 +3239,77 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_settings()
         await query.answer("Channels (Auto) toggled")
         await query.message.reply_text("📺 Include Channels in Auto toggled.")
+        return
+
+    # === M3U Options Submenu ===
+    if data == "settings_m3u_options":
+        s = GLOBAL_SETTINGS
+        proxy_info = ""
+        if s.get('m3u_use_proxy'):
+            if s.get('proxy_value'):
+                proxy_info = f" (<code>{s.get('proxy_value')[:20]}...</code>)"
+            else:
+                proxy_info = " (Auto-fetch)"
+        
+        txt = (
+            "<b>🎬 M3U Advanced Options</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"⚡ Fast Mode: <b>{'ON' if s.get('m3u_fast_mode') else 'OFF'}</b>\n"
+            f"   <i>Skip full M3U download for faster checks</i>\n\n"
+            f"🔌 Use Proxy: <b>{'ON' if s.get('m3u_use_proxy') else 'OFF'}</b>{proxy_info}\n"
+            f"   <i>Auto-fetch proxy if none set in Settings</i>\n\n"
+            f"⏭️ Skip Preflight: <b>{'ON' if s.get('m3u_skip_preflight') else 'OFF'}</b>\n"
+            f"   <i>Skip OPTIONS preflight request</i>\n\n"
+            f"🛡️ Bypass Mode: <b>{'ON' if s.get('m3u_bypass_mode') else 'OFF'}</b>\n"
+            f"   <i>Cloudflare/DDoS-Guard bypass</i>\n\n"
+            f"🌐 All User-Agents: <b>{'ON' if s.get('m3u_all_user_agents') else 'OFF'}</b>\n"
+            f"   <i>Try multiple User-Agents</i>\n\n"
+            "Toggle options below:"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Fast Mode", callback_data="m3u_toggle_fast")],
+            [InlineKeyboardButton("🔌 Use Proxy", callback_data="m3u_toggle_proxy")],
+            [InlineKeyboardButton("⏭️ Skip Preflight", callback_data="m3u_toggle_preflight")],
+            [InlineKeyboardButton("🛡️ Bypass Mode", callback_data="m3u_toggle_bypass")],
+            [InlineKeyboardButton("🌐 All User-Agents", callback_data="m3u_toggle_ua")],
+            [InlineKeyboardButton("⬅️ Back to Settings", callback_data="settings")]
+        ])
+        await query.edit_message_text(txt, parse_mode='HTML', reply_markup=kb)
+        return
+
+    # M3U Options Toggles
+    if data == "m3u_toggle_fast":
+        GLOBAL_SETTINGS['m3u_fast_mode'] = not GLOBAL_SETTINGS.get('m3u_fast_mode')
+        save_settings()
+        await query.answer("Fast Mode toggled")
+        await query.message.reply_text("⚡ M3U Fast Mode toggled.")
+        return
+
+    if data == "m3u_toggle_proxy":
+        GLOBAL_SETTINGS['m3u_use_proxy'] = not GLOBAL_SETTINGS.get('m3u_use_proxy')
+        save_settings()
+        await query.answer("M3U Proxy toggled")
+        await query.message.reply_text("🔌 M3U Use Proxy toggled.")
+        return
+
+    if data == "m3u_toggle_preflight":
+        GLOBAL_SETTINGS['m3u_skip_preflight'] = not GLOBAL_SETTINGS.get('m3u_skip_preflight')
+        save_settings()
+        await query.answer("Skip Preflight toggled")
+        await query.message.reply_text("⏭️ M3U Skip Preflight toggled.")
+        return
+
+    if data == "m3u_toggle_bypass":
+        GLOBAL_SETTINGS['m3u_bypass_mode'] = not GLOBAL_SETTINGS.get('m3u_bypass_mode')
+        save_settings()
+        await query.answer("Bypass Mode toggled")
+        await query.message.reply_text("🛡️ M3U Bypass Mode toggled.")
+        return
+
+    if data == "m3u_toggle_ua":
+        GLOBAL_SETTINGS['m3u_all_user_agents'] = not GLOBAL_SETTINGS.get('m3u_all_user_agents')
+        save_settings()
+        await query.answer("All User-Agents toggled")
+        await query.message.reply_text("🌐 M3U All User-Agents toggled.")
         return
 
     # === Phase 3: U:P Xtream Auto (batch) ===
@@ -3276,26 +3503,57 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # PHASE 3: M3U Manual (single URL)
     if mode == 'm3u_manual':
         url = update.message.text.strip()
+        logger.info(f"M3U Manual Check: Processing URL: {url[:50]}...")
         if not url.startswith(('http://','https://')):
-            await update.message.reply_html("❌ <b>Invalid URL</b>")
+            await update.message.reply_html("❌ <b>Invalid URL</b>\n\nURL must start with http:// or https://")
             return
-        status_msg = await update.message.reply_html("⏳ <b>Probing M3U...</b>")
+        
+        # Show M3U settings being used
+        s = GLOBAL_SETTINGS
+        settings_info = []
+        if s.get('m3u_fast_mode'):
+            settings_info.append("⚡ Fast")
+        if s.get('m3u_use_proxy'):
+            settings_info.append("🔌 Proxy")
+        if s.get('m3u_bypass_mode'):
+            settings_info.append("🛡️ Bypass")
+        if s.get('m3u_all_user_agents'):
+            settings_info.append("🌐 Multi-UA")
+        settings_line = " | ".join(settings_info) if settings_info else "Standard"
+        
+        status_msg = await update.message.reply_html(
+            f"⏳ <b>Probing M3U...</b>\n⚙️ <code>{settings_line}</code>"
+        )
         try:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         except Exception:
             pass
         ok, info, err = M3UProbe.probe(url, timeout=8, proxies=get_proxies())
+        logger.info(f"M3U probe result: ok={ok}, err={err}")
         if ok:
+            logger.info(f"M3U info keys: {list(info.keys())}")
             try:
                 ch = M3UProbe.fetch_first_group(info.get('m3u',''), timeout=5, proxies=get_proxies(), max_kb=256)
                 if ch:
                     info['channels'] = ch
-            except Exception:
-                pass
+                    logger.info(f"Fetched channels: {ch}")
+            except Exception as ch_err:
+                logger.warning(f"Failed to fetch channels: {ch_err}")
             block = M3UProbe.format_manual_block(info)
-            await status_msg.edit_text(block)
+            logger.info(f"Formatted block length: {len(block)} chars")
+            try:
+                # Try to send as plain text first (no HTML parsing issues)
+                await status_msg.edit_text(block, parse_mode=None)
+            except Exception as edit_err:
+                logger.error(f"Failed to edit M3U manual check message: {edit_err}")
+                # Fallback: send as new message
+                await update.message.reply_text(block, parse_mode=None, reply_markup=get_main_menu())
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
         else:
-            await status_msg.edit_text(f"❌ Failed: {err}")
+            await status_msg.edit_text(f"❌ <b>Failed:</b> {err}", parse_mode='HTML')
         context.user_data.clear()
         return
 
@@ -4033,8 +4291,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # === HANDLE M3U LINK CHECKER (AUTO, REDLINE info) ===
         if mode == 'check_m3u':
+            # Show M3U settings being used
+            s = GLOBAL_SETTINGS
+            settings_info = []
+            if s.get('m3u_fast_mode'):
+                settings_info.append("⚡ Fast Mode")
+            if s.get('m3u_use_proxy'):
+                settings_info.append("🔌 Proxy")
+            if s.get('m3u_bypass_mode'):
+                settings_info.append("🛡️ Bypass")
+            if s.get('m3u_all_user_agents'):
+                settings_info.append("🌐 Multi-UA")
+            
+            settings_line = " | ".join(settings_info) if settings_info else "Standard"
+            
             await status_msg.edit_text(
-                "⏳ <b>Starting M3U Probe...</b>",
+                f"⏳ <b>Starting M3U Probe...</b>\n\n"
+                f"⚙️ Settings: <code>{settings_line}</code>",
                 parse_mode='HTML'
             )
             links = [line.strip() for line in text.split('\n') if line.strip().startswith(('http://','https://'))]
@@ -5068,6 +5341,18 @@ def main():
     # Fallback to polling if webhook not enabled or failed
     if not use_webhook_mode:
         logger.info("🔄 Using POLLING mode with auto-retry")
+        
+        # Pre-flight health check: verify bot token and connectivity
+        logger.info("🔍 Running pre-flight health check...")
+        try:
+            bot_info = asyncio.run(application.bot.get_me())
+            logger.info(f"✅ Bot connected: @{bot_info.username} ({bot_info.first_name})")
+            logger.info(f"✅ Bot ID: {bot_info.id}")
+        except Exception as e:
+            logger.error(f"❌ Pre-flight check FAILED: {e}")
+            logger.error("   Check your BOT_TOKEN and internet connection")
+            raise
+        
         retry_count = 0
         max_continuous_retries = 5
         
@@ -5146,7 +5431,10 @@ if __name__ == '__main__':
         # Configuration summary
         logger.info("")
         logger.info("📋 Configuration:")
-        logger.info(f"   Mode: {'WEBHOOK' if USE_WEBHOOK and KOYEB_PUBLIC_URL else 'POLLING'}")
+        mode = 'WEBHOOK' if USE_WEBHOOK and KOYEB_PUBLIC_URL else 'POLLING'
+        logger.info(f"   Mode: {mode}")
+        if mode == 'WEBHOOK':
+            logger.info("   💡 If bot doesn't respond, set USE_WEBHOOK=false to use polling")
         logger.info(f"   Keep-alive: {'2min aggressive' if KOYEB_PUBLIC_URL else 'Internal fallback'}")
         logger.info(f"   Health checks: Advanced (self-healing)")
         logger.info(f"   Proxy: {'Enabled' if PROXY_CONFIG else 'Disabled'}")
