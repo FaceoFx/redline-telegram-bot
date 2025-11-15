@@ -1298,9 +1298,13 @@ class M3UProbe:
         lines.append(exp_line)
         ch = info.get('channels')
         if ch:
-            lines.append(f"\u25cf\u25ba Content Channels: {ch}")
-        else:
-            lines.append(f"\u25cf\u25ba Content Channels: ")
+            # Format channels like REDLINE script
+            if 'Family' in ch:
+                lines.append("\u26a0\ufe0f Content Channels: \u25ba Family \u25c4")
+            if 'Adult' in ch:
+                lines.append("\u26a0\ufe0f Content Channels: \u25cf Adults \u25cf")
+        if not ch or (ch and 'Family' not in ch and 'Adult' not in ch):
+            lines.append("\u26a0\ufe0f Content Channels: ")
         lines.append(f"\u25cf\u25ba M3U: {info.get('m3u','-')}")
         lines.append("----------------------------")
         return "\n".join(lines)
@@ -1320,15 +1324,20 @@ class M3UProbe:
         lines.append(f" Password: {info.get('password','-')}")
         lines.append(f" Created: {info.get('created','-')}")
         lines.append(f" Expires: {info.get('expires','-')}")
-        if info.get('channels'):
-            lines.append(f" Content Channels: {info.get('channels')}")
+        ch = info.get('channels')
+        if ch:
+            # Format channels like REDLINE script
+            if 'Family' in ch:
+                lines.append(" Content Channels: \u25ba Family \u25c4")
+            if 'Adult' in ch:
+                lines.append(" Content Channels: \u25cf Adults \u25cf")
         lines.append(f" M3U: {info.get('m3u','-')}")
         lines.append(f" API: {info.get('api','-')}")
         return "\n".join(lines)
 
     @staticmethod
     def fetch_first_group(m3u_url: str, timeout: int = 5, proxies: dict | None = None, max_kb: int = 256, force_fetch: bool = False) -> str:
-        """Fetch M3U and count channels by category. Returns formatted string like 'Family: 100 | Adult: 50' or empty on error."""
+        """Fetch M3U and detect Family/Adult categories. Returns 'Family' or 'Adult' or 'Family | Adult' or empty."""
         logger.info(f"fetch_first_group called: url={m3u_url[:60]}..., force_fetch={force_fetch}, max_kb={max_kb}")
         
         # Check Fast Mode setting (can be bypassed with force_fetch for manual checks)
@@ -1424,19 +1433,19 @@ class M3UProbe:
             
             logger.info(f"Found {total} total channels, {len(category_counts)} categories")
             
-            # REDLINE behavior: Only show Family and Adult categories
+            # REDLINE behavior: Only show Family and Adult categories (names only, no counts)
             parts = []
             if 'Family' in category_counts:
-                parts.append(f"Family: {category_counts['Family']}")
+                parts.append('Family')
             if 'Adult' in category_counts:
-                parts.append(f"Adult: {category_counts['Adult']}")
+                parts.append('Adult')
             
             if not parts:
                 # No Family or Adult found, return empty
                 logger.info("No Family or Adult categories found")
                 return ""
             
-            result = " | ".join(parts)
+            result = " | ".join(parts)  # e.g., "Family" or "Adult" or "Family | Adult"
             logger.info(f"Returning Family/Adult result: {result}")
             return result
             
@@ -3479,6 +3488,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_menu()
     )
 
+async def safe_edit_or_send(query, text: str, parse_mode: str = 'HTML', reply_markup = None):
+    """Helper to edit message text or send new message if editing fails (e.g., document messages)"""
+    try:
+        await query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception as e:
+        # If editing fails (e.g., message is a document), send a new message
+        logger.debug(f"Could not edit message (probably document), sending new: {e}")
+        try:
+            await query.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        except Exception as e2:
+            logger.error(f"Could not send new message either: {e2}")
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all button callbacks - ALL ENGLISH"""
     query = update.callback_query
@@ -3498,7 +3519,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "back":
         context.user_data.clear()
         user = query.from_user
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             f"👋 <b>Welcome back, {user.first_name}!</b>\n\n"
             "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -3527,7 +3549,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("👷 Workers: 6", callback_data="settings_workers_6"), InlineKeyboardButton("12", callback_data="settings_workers_12"), InlineKeyboardButton("20", callback_data="settings_workers_20")],
             [InlineKeyboardButton("⬅️ Back", callback_data="back")]
         ])
-        await query.edit_message_text(txt, parse_mode='HTML', reply_markup=kb)
+        await safe_edit_or_send(query, txt, parse_mode='HTML', reply_markup=kb)
         return
 
     if data.startswith("settings_workers_"):
@@ -3551,7 +3573,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "settings_set_proxy":
         context.user_data.clear()
         context.user_data['mode'] = 'settings_set_proxy'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>✏️ Set Proxy</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "Send proxy as <code>host:port</code> or full URL (e.g., <code>http://host:port</code> or <code>socks5://host:port</code>).",
             parse_mode='HTML',
@@ -3598,7 +3621,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🌐 All User-Agents", callback_data="m3u_toggle_ua")],
             [InlineKeyboardButton("⬅️ Back to Settings", callback_data="settings")]
         ])
-        await query.edit_message_text(txt, parse_mode='HTML', reply_markup=kb)
+        await safe_edit_or_send(query, txt, parse_mode='HTML', reply_markup=kb)
         return
 
     # M3U Options Toggles
@@ -3642,7 +3665,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['mode'] = 'up_xtream_auto'
         context.user_data['step'] = 'ask_host'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>⚡ User:Pass Xtream Auto</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
             parse_mode='HTML',
@@ -3655,7 +3679,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['mode'] = 'mac_scanner'
         context.user_data['step'] = 'ask_host'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>📱 MAC Scanner (Auto)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port)\n"
             "Example: <code>http://example.com:8080</code>\n\n"
@@ -3672,7 +3697,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "whois_lookup":
         context.user_data.clear()
         context.user_data['mode'] = 'whois_lookup'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "🌐 <b>WHOIS Lookup</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📱 <b>Send IP or domain:</b>\n"
@@ -3688,7 +3714,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "m3u_host_analyzer":
         context.user_data.clear()
         context.user_data['mode'] = 'm3u_host_analyzer'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "🔍 <b>M3U Host Analyzer</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📱 <b>Send M3U URL to analyze:</b>\n"
@@ -3710,7 +3737,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "keyword_searcher":
         context.user_data.clear()
         context.user_data['mode'] = 'keyword_searcher'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>🔎 Logs Keyword Searcher</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📤 Send log/text file first, then send keywords (comma separated).",
             parse_mode='HTML',
@@ -3722,7 +3750,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "panel_searcher":
         context.user_data.clear()
         context.user_data['mode'] = 'panel_searcher'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>📦 Panel Searcher</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📤 Send log/text file to search for panel URLs.",
             parse_mode='HTML',
@@ -3734,7 +3763,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "check_panels":
         context.user_data.clear()
         context.user_data['mode'] = 'check_panels'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>🟢 Check Live Panels</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📤 Send a file with panel URLs (one per line).",
             parse_mode='HTML',
@@ -3746,7 +3776,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "streamcreed_finder":
         context.user_data.clear()
         context.user_data['mode'] = 'streamcreed_finder'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>🗝️ StreamCreed Key Finder</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📤 Send log/text file to scan for keys.",
             parse_mode='HTML',
@@ -4034,7 +4065,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['mode'] = 'up_xtream_single'
         context.user_data['step'] = 'ask_host'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>⚡ User:Pass Xtream Check (Single)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
             parse_mode='HTML',
@@ -4046,7 +4078,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "m3u_manual":
         context.user_data.clear()
         context.user_data['mode'] = 'm3u_manual'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>🔍 M3U Manual Check</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send a single M3U URL to test",
             parse_mode='HTML',
@@ -4059,7 +4092,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['mode'] = 'mac_to_m3u'
         context.user_data['step'] = 'ask_host'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>↩️ MAC → M3U</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
             parse_mode='HTML',
@@ -4072,7 +4106,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data['mode'] = 'mac_host_single'
         context.user_data['step'] = 'ask_host'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>📱 MAC Host Check (Single)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
             parse_mode='HTML',
@@ -4084,7 +4119,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "combo_generator":
         context.user_data.clear()
         context.user_data['mode'] = 'combo_generator'
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             "<b>🧪 Combo Generator</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "📝 Send input in format: <code>prefix,password,start,end</code>\n"
             "Example: <code>user,pass,1,100</code> → user1:pass ... user100:pass",
@@ -4160,7 +4196,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⏳ Waiting for file..."
         )
         
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             text,
             parse_mode='HTML',
             reply_markup=get_back_button()
@@ -4185,7 +4222,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Detailed results (ALIVE/DEAD/ERROR)\n\n"
             "⏳ Send your M3U file..."
         )
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=get_back_button())
+        await safe_edit_or_send(query, text, parse_mode='HTML', reply_markup=get_back_button())
     
     # M3U to Combo
     elif data == "m3u_to_combo":
@@ -4204,7 +4241,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Sorted results\n\n"
             "⏳ Send your M3U file..."
         )
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=get_back_button())
+        await safe_edit_or_send(query, text, parse_mode='HTML', reply_markup=get_back_button())
     
     # Combo to M3U
     elif data == "combo_to_m3u":
@@ -4222,7 +4259,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Bot adds /get.php?username=...&password=...\n\n"
             "⏳ Send your combo file first..."
         )
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=get_back_button())
+        await safe_edit_or_send(query, text, parse_mode='HTML', reply_markup=get_back_button())
     
     # M3U to MAC
     elif data == "m3u_to_mac":
@@ -4240,7 +4277,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Deduplicated\n\n"
             "⏳ Send your M3U file..."
         )
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=get_back_button())
+        await safe_edit_or_send(query, text, parse_mode='HTML', reply_markup=get_back_button())
     
     # Back to menu
     elif data == "back":
@@ -4248,7 +4285,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
-        await query.edit_message_text(
+        await safe_edit_or_send(
+            query,
             welcome_text,
             parse_mode='HTML',
             reply_markup=get_main_menu()
@@ -5451,13 +5489,23 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 expires_val = info.get('expires', '-')
                 days_val = info.get('days_left', '')
                 
-                # Generate friendly display name from first name or username
+                # Generate full name of the Telegram user who requested this
                 try:
                     user_obj = update.effective_user
-                    if user_obj and user_obj.first_name:
-                        display_name = user_obj.first_name
-                    elif user_obj and user_obj.username:
-                        display_name = f"@{user_obj.username}"
+                    if user_obj:
+                        # Build full name (first + last)
+                        name_parts = []
+                        if user_obj.first_name:
+                            name_parts.append(user_obj.first_name)
+                        if user_obj.last_name:
+                            name_parts.append(user_obj.last_name)
+                        
+                        if name_parts:
+                            display_name = " ".join(name_parts)
+                        elif user_obj.username:
+                            display_name = f"@{user_obj.username}"
+                        else:
+                            display_name = "User"
                     else:
                         display_name = "User"
                 except Exception:
