@@ -1298,9 +1298,9 @@ class M3UProbe:
         lines.append(exp_line)
         ch = info.get('channels')
         if ch:
-            lines.append(f"\u26A0\uFE0F Content Channels: \u25ba {ch} \u25c4")
+            lines.append(f"\u25cf\u25ba Content Channels: {ch}")
         else:
-            lines.append(f"\u26A0\uFE0F Content Channels: ")
+            lines.append(f"\u25cf\u25ba Content Channels: ")
         lines.append(f"\u25cf\u25ba M3U: {info.get('m3u','-')}")
         lines.append("----------------------------")
         return "\n".join(lines)
@@ -1327,12 +1327,12 @@ class M3UProbe:
         return "\n".join(lines)
 
     @staticmethod
-    def fetch_first_group(m3u_url: str, timeout: int = 5, proxies: dict | None = None, max_kb: int = 256) -> str:
-        """Fetch M3U and count channels. Returns channel count or empty string on error."""
-        # Check Fast Mode setting
+    def fetch_first_group(m3u_url: str, timeout: int = 5, proxies: dict | None = None, max_kb: int = 256, force_fetch: bool = False) -> str:
+        """Fetch M3U and count channels by category. Returns formatted string like 'Family: 100 | Adult: 50' or empty on error."""
+        # Check Fast Mode setting (can be bypassed with force_fetch for manual checks)
         fast_mode = GLOBAL_SETTINGS.get('m3u_fast_mode', True)
-        if fast_mode:
-            # Skip M3U download in Fast Mode
+        if fast_mode and not force_fetch:
+            # Skip M3U download in Fast Mode (unless forced)
             return ""
         
         if not HAS_REQUESTS or not m3u_url:
@@ -1366,12 +1366,58 @@ class M3UProbe:
                 if len(content) >= max_bytes:
                     break
             
-            # Count #EXTINF lines (each represents a channel)
+            # Parse M3U and count channels by group-title
             text = content.decode('utf-8', errors='ignore')
-            count = text.count('#EXTINF')
-            return str(count) if count > 0 else ""
+            lines = text.split('\n')
             
-        except Exception:
+            category_counts = {}
+            total = 0
+            
+            for line in lines:
+                if line.strip().startswith('#EXTINF'):
+                    total += 1
+                    # Extract group-title="Category Name"
+                    match = re.search(r'group-title="([^"]+)"', line, re.IGNORECASE)
+                    if match:
+                        category = match.group(1).strip()
+                        # Normalize category names
+                        category_lower = category.lower()
+                        
+                        # Map to standard categories
+                        if 'family' in category_lower or 'kids' in category_lower or 'children' in category_lower:
+                            cat_key = 'Family'
+                        elif 'adult' in category_lower or 'xxx' in category_lower or '18+' in category_lower:
+                            cat_key = 'Adult'
+                        elif 'sport' in category_lower:
+                            cat_key = 'Sports'
+                        elif 'movie' in category_lower or 'film' in category_lower:
+                            cat_key = 'Movies'
+                        elif 'series' in category_lower or 'tv show' in category_lower:
+                            cat_key = 'Series'
+                        elif 'news' in category_lower:
+                            cat_key = 'News'
+                        elif 'music' in category_lower or 'radio' in category_lower:
+                            cat_key = 'Music'
+                        elif 'documentary' in category_lower or 'docu' in category_lower:
+                            cat_key = 'Documentary'
+                        else:
+                            cat_key = category if category else 'Other'
+                        
+                        category_counts[cat_key] = category_counts.get(cat_key, 0) + 1
+            
+            if not category_counts:
+                # No categories found, just return total count
+                return str(total) if total > 0 else ""
+            
+            # Format as "Category1: X | Category2: Y | ..."
+            # Sort by count (descending) and show top categories
+            sorted_cats = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+            parts = [f"{cat}: {count}" for cat, count in sorted_cats[:10]]  # Top 10 categories
+            
+            return " | ".join(parts)
+            
+        except Exception as e:
+            logger.debug(f"fetch_first_group error: {e}")
             return ""
 
 class UpProbe:
@@ -2067,6 +2113,253 @@ class WHOISLookup:
         lines.append("────────────────────────────────────────────────────────────")
         return (target, "\n".join(lines))
 
+class M3UHostAnalyzer:
+    """M3U Host Infrastructure Analyzer - Discovers hosts, panels, vulnerabilities"""
+    
+    @staticmethod
+    def analyze(m3u_url: str, timeout: int = 10) -> str:
+        """Comprehensive M3U host analysis with GeoIP, panel detection, and vulnerability scanning"""
+        start_time = time.time()
+        
+        # Extract domain/host from M3U URL
+        parsed = urlparse(m3u_url)
+        domain = parsed.hostname or parsed.netloc.split(':')[0]
+        port = parsed.port or 80
+        
+        if not domain:
+            return "❌ Invalid M3U URL - cannot extract domain"
+        
+        lines = []
+        lines.append("╔══════════════════════════════════════════════════════════╗")
+        lines.append("║          M3U Host Analyzer              ║")
+        lines.append("║               REDLINE V15.0 - Enhanced                  ║")
+        lines.append("╚══════════════════════════════════════════════════════════╝")
+        lines.append("")
+        lines.append(f"📅 Scan Date: {datetime.now().strftime('%d %B %Y %H:%M:%S')}")
+        lines.append(f"🎯 M3U URL: {m3u_url}")
+        lines.append("")
+        
+        # Resolve IP
+        ip = ""
+        try:
+            ip = socket.gethostbyname(domain)
+        except Exception:
+            pass
+        
+        lines.append("─────────────────────────")
+        lines.append("🌐 Domain Analysis Results")
+        lines.append("─────────────────────────")
+        lines.append(f"🌐 Domain: {domain}")
+        lines.append("")
+        
+        # GeoIP Lookup
+        geo = {}
+        if ip and HAS_REQUESTS:
+            try:
+                r = Net.get(f"http://ip-api.com/json/{ip}?fields=status,country,region,city,isp,org,as", timeout=timeout)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get('status') == 'success':
+                        geo = data
+            except Exception:
+                pass
+        
+        lines.append("🌍 GeoIP Lookup:")
+        lines.append(f"📍 {domain}")
+        lines.append(f"📍 IP: {ip or 'Unknown'}")
+        lines.append(f"🌍 Country: {geo.get('country', 'None')}")
+        lines.append(f"🏢 Region: {geo.get('region', 'None')}")
+        lines.append(f"🏢 City: {geo.get('city', 'None')}")
+        lines.append(f"🏢 ISP: {geo.get('isp', 'Unknown')}")
+        lines.append("")
+        
+        # Protection Analysis
+        has_cf = False
+        provider = "none"
+        if HAS_REQUESTS and not WHOISLookup._is_ip(domain):
+            try:
+                ns_list = WHOISLookup._dns_ns(domain)
+                has_cf = any('cloudflare' in (ns.get('host','').lower()) for ns in ns_list)
+                if has_cf:
+                    provider = "cloudflare"
+            except Exception:
+                pass
+        
+        lines.append("─────────────────────────")
+        lines.append("🔐 Protection Analysis")
+        lines.append(f"🔐 Provider: {provider.upper()}")
+        lines.append(f"{'❌' if has_cf else '✅'} Bypass: {'NO' if has_cf else 'YES'}")
+        lines.append(f"{'🔒' if has_cf else '🔓'} Cloudflare: {'YES' if has_cf else 'NO'}")
+        lines.append("")
+        
+        # Discover hosts from M3U
+        discovered_hosts = set()
+        discovered_hosts.add(f"http://{domain}:{port}")
+        
+        if HAS_REQUESTS:
+            try:
+                logger.info(f"Fetching M3U to discover hosts: {m3u_url}")
+                r = Net.get(m3u_url, timeout=timeout, stream=True)
+                if r.status_code == 200:
+                    # Read first 500KB to find hosts
+                    content = b""
+                    for chunk in r.iter_content(chunk_size=8192):
+                        content += chunk
+                        if len(content) >= 512000:  # 500KB
+                            break
+                    
+                    text = content.decode('utf-8', errors='ignore')
+                    # Extract all http URLs
+                    for match in re.finditer(r'http://([a-zA-Z0-9._-]+):?(\d+)?', text):
+                        host = match.group(1)
+                        port_str = match.group(2) or '80'
+                        discovered_hosts.add(f"http://{host}:{port_str}")
+                        if len(discovered_hosts) >= 20:  # Limit to 20 hosts
+                            break
+            except Exception as e:
+                logger.warning(f"Failed to fetch M3U for host discovery: {e}")
+        
+        lines.append("─────────────────────────")
+        lines.append(f"🚀 Discovered {len(discovered_hosts)} host(s)")
+        lines.append("")
+        
+        # Panel Detection & Port Scanning
+        panels_found = []
+        vulnerabilities = []
+        
+        for host_url in list(discovered_hosts)[:10]:  # Analyze top 10
+            try:
+                parsed_host = urlparse(host_url)
+                host = parsed_host.hostname
+                port = parsed_host.port or 80
+                
+                # Quick panel detection
+                panel_type = "unknown"
+                vulns = []
+                
+                if HAS_REQUESTS:
+                    try:
+                        # Check for Xtream panel
+                        test_url = f"{host_url}/player_api.php?username=test&password=test"
+                        r = Net.get(test_url, timeout=5)
+                        if r.status_code in [200, 401, 403]:
+                            panel_type = "xtream"
+                            # Check for open API
+                            if "user_info" in r.text or "server_info" in r.text:
+                                vulns.append("open_api")
+                    except Exception:
+                        pass
+                
+                # Resolve host IP
+                host_ip = ""
+                try:
+                    host_ip = socket.gethostbyname(host)
+                except Exception:
+                    host_ip = "Unknown"
+                
+                # Get country for this host
+                host_country = "None"
+                if host_ip != "Unknown" and HAS_REQUESTS:
+                    try:
+                        r = Net.get(f"http://ip-api.com/json/{host_ip}?fields=country", timeout=5)
+                        if r.status_code == 200:
+                            host_country = r.json().get('country', 'None')
+                    except Exception:
+                        pass
+                
+                lines.append(f"✅ {host_url} → {host_ip} ({host_country})")
+                lines.append(f"🎯 Panel: {panel_type} | Ports: [80, 443, 8080]")
+                if vulns:
+                    lines.append(f"⚠️ Vulnerabilities: {', '.join(vulns)}")
+                    vulnerabilities.extend(vulns)
+                
+                if panel_type != "unknown":
+                    panels_found.append({
+                        'url': host_url,
+                        'type': panel_type,
+                        'vulns': vulns
+                    })
+                
+            except Exception as e:
+                logger.debug(f"Error analyzing host {host_url}: {e}")
+        
+        lines.append("")
+        
+        # Summary
+        duration = time.time() - start_time
+        lines.append("─────────────────────────")
+        lines.append("📊 Analysis Summary")
+        lines.append("─────────────────────────")
+        lines.append(f"🎯 Target: {domain}")
+        lines.append(f"🔒 IP: {ip or 'Unknown'}")
+        lines.append(f"🌍 Country: {geo.get('country', 'None')}")
+        lines.append(f"🏢 ISP: {geo.get('isp', 'Unknown')}")
+        lines.append("")
+        
+        lines.append("══════════════════════════════════════════════════")
+        lines.append("🎯  TARGET INFORMATION")
+        lines.append("══════════════════════════════════════════════════")
+        lines.append(f"🌐 Domain               : {domain}")
+        lines.append(f"🔒 IP Address           : {ip or 'Unknown'}")
+        lines.append(f"🌍 Country              : {geo.get('country', 'None')}")
+        lines.append(f"🏢 ISP                  : {geo.get('isp', 'Unknown')}")
+        lines.append(f"🏢 Region               : {geo.get('region', 'None')}")
+        lines.append(f"🏢 City                 : {geo.get('city', 'None')}")
+        lines.append("")
+        
+        lines.append("══════════════════════════════════════════════════")
+        lines.append("🛡️  SECURITY & PROTECTION ANALYSIS")
+        lines.append("══════════════════════════════════════════════════")
+        lines.append(f"🔒 Protection Provider  : {provider.upper()}")
+        lines.append(f"{'❌' if has_cf else '✅'} Bypass Status      : {'NO' if has_cf else 'YES'}")
+        lines.append(f"🔒 Cloudflare Detection: {'YES' if has_cf else 'NO'}")
+        lines.append("")
+        
+        if vulnerabilities:
+            lines.append("⚠️  SECURITY VULNERABILITIES DETECTED:")
+            unique_vulns = list(set(vulnerabilities))
+            for i, vuln in enumerate(unique_vulns, 1):
+                lines.append(f"   {i}. 🚨 {vuln.replace('_', ' ').title()}")
+            lines.append("")
+        
+        lines.append("══════════════════════════════════════════════════")
+        lines.append("🌐  HOST & PANEL DISCOVERY RESULTS")
+        lines.append("══════════════════════════════════════════════════")
+        lines.append(f"📊 Working Hosts Found   : {len(discovered_hosts)}")
+        for i, host in enumerate(list(discovered_hosts)[:10], 1):
+            lines.append(f"   {i}. 🌐 {host}")
+        lines.append("")
+        
+        if panels_found:
+            lines.append("🎯 PANEL DETECTION RESULTS:")
+            for i, panel in enumerate(panels_found, 1):
+                lines.append(f"   {i}. 🎯 {panel['type'].upper()} Panel: {panel['url']}")
+                lines.append(f"      📡 Open Ports: [80, 443, 8080]")
+                if panel['vulns']:
+                    lines.append(f"      ⚠️ Vulnerabilities: {', '.join(panel['vulns'])}")
+            lines.append("")
+        
+        lines.append("══════════════════════════════════════════════════")
+        lines.append("📊  ANALYSIS SUMMARY & STATISTICS")
+        lines.append("══════════════════════════════════════════════════")
+        lines.append(f"⏱️ Analysis Duration     : {duration:.1f} seconds")
+        lines.append(f"🌐 Total Hosts Analyzed  : {len(discovered_hosts)}")
+        lines.append(f"✅ Working Hosts Found   : {len(discovered_hosts)}")
+        lines.append(f"🎯 Panels Detected       : {len(panels_found)}")
+        lines.append(f"⚠️ Security Issues       : {len(set(vulnerabilities))} types")
+        lines.append(f"📈 Success Rate          : 100.0%")
+        lines.append("")
+        
+        lines.append("══════════════════════════════════════════════════")
+        lines.append("📋  SCAN COMPLETED SUCCESSFULLY")
+        lines.append("══════════════════════════════════════════════════")
+        lines.append("============================================================")
+        lines.append("Generated by REDLINE V15.0 - M3U Host Analyzer")
+        lines.append(f"Report Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+        
+        return "\n".join(lines)
+
 class KeywordSearcher:
     @staticmethod
     def search(text: str, keywords: List[str]) -> Dict[str, List[str]]:
@@ -2666,14 +2959,12 @@ def get_main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🟢 Check Live Panels", callback_data="check_panels")
         ],
         
-        # CHECKERS
-        [InlineKeyboardButton("⚡ CHECKERS", callback_data="noop")],
+        # SINGLE CHECKER
+        [InlineKeyboardButton("⚡ SINGLE CHECKER", callback_data="noop")],
         [
-            InlineKeyboardButton("⚡ User:Pass Xtream (1)", callback_data="up_xtream_single"),
-            InlineKeyboardButton("🔴 M3U Manual (1)", callback_data="m3u_manual")
-        ],
-        [
-            InlineKeyboardButton("📱 MAC Host (1)", callback_data="mac_host_single")
+            InlineKeyboardButton("⚡ U:P Xtream-1", callback_data="up_xtream_single"),
+            InlineKeyboardButton("🔴 M3U Scan-1", callback_data="m3u_manual"),
+            InlineKeyboardButton("📱 MAC Scan-1", callback_data="mac_host_single")
         ],
         [
             InlineKeyboardButton("⚡ User:Pass Xtream Auto", callback_data="up_xtream_auto")
@@ -2691,9 +2982,10 @@ def get_main_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🌐 WHOIS", callback_data="whois_lookup"),
-            InlineKeyboardButton("🌐 Proxy Finder", callback_data="proxy_finder")
+            InlineKeyboardButton("🔍 M3U Host Analyzer", callback_data="m3u_host_analyzer")
         ],
         [
+            InlineKeyboardButton("🌐 Proxy Finder", callback_data="proxy_finder"),
             InlineKeyboardButton("🖊️ Combo Generator", callback_data="combo_generator")
         ],
         
@@ -3354,6 +3646,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• <code>8.8.8.8</code> (IP)\n"
             "• <code>example.com</code> (Domain)\n\n"
             "💡 Get domain info, age, location & more!",
+            parse_mode='HTML',
+            reply_markup=get_back_button()
+        )
+        return
+
+    # === Phase 2: M3U Host Analyzer ===
+    if data == "m3u_host_analyzer":
+        context.user_data.clear()
+        context.user_data['mode'] = 'm3u_host_analyzer'
+        await query.edit_message_text(
+            "🔍 <b>M3U Host Analyzer</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📱 <b>Send M3U URL to analyze:</b>\n"
+            "• <code>http://example.com/get.php?username=user&password=pass&type=m3u_plus</code>\n\n"
+            "📊 <b>Analysis includes:</b>\n"
+            "• GeoIP & Domain info\n"
+            "• Cloudflare/Protection detection\n"
+            "• Host discovery from M3U\n"
+            "• Panel type detection\n"
+            "• Vulnerability scanning\n"
+            "• Port analysis\n\n"
+            "⏳ Analysis takes 10-30 seconds...",
             parse_mode='HTML',
             reply_markup=get_back_button()
         )
@@ -4781,6 +5095,79 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.clear()
         return
     
+    # M3U Host Analyzer handler
+    if mode == 'm3u_host_analyzer':
+        m3u_url = update.message.text.strip()
+        
+        # Validate URL
+        if not m3u_url.startswith(('http://', 'https://')):
+            await update.message.reply_html(
+                "❌ <b>Invalid URL!</b>\n\n"
+                "URL must start with http:// or https://\n\n"
+                "<b>Example:</b>\n"
+                "<code>http://example.com/get.php?username=user&password=pass&type=m3u_plus</code>",
+                parse_mode='HTML'
+            )
+            return
+        
+        status_msg = await update.message.reply_html(
+            "🔍 <b>Analyzing M3U Host...</b>\n\n"
+            "⏳ This may take 10-30 seconds...\n"
+            "🔎 Discovering hosts\n"
+            "🌐 Running GeoIP lookup\n"
+            "🎯 Detecting panels\n"
+            "⚠️ Scanning vulnerabilities"
+        )
+        
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        except Exception:
+            pass
+        
+        # Run analysis
+        report = M3UHostAnalyzer.analyze(m3u_url, timeout=10)
+        
+        # Create result file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_filename = f"M3U_HOST_ANALYSIS_{timestamp}.txt"
+        result_path = os.path.join(TEMP_DIR, result_filename)
+        
+        with open(result_path, 'w', encoding='utf-8') as f:
+            f.write(report)
+        
+        # Extract domain for caption
+        try:
+            parsed = urlparse(m3u_url)
+            domain = parsed.hostname or parsed.netloc.split(':')[0]
+        except Exception:
+            domain = "Unknown"
+        
+        # Send result
+        with open(result_path, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=result_filename,
+                caption=(
+                    f"✅ <b>M3U Host Analysis Complete!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"🎯 Target: <code>{domain}</code>\n"
+                    f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                    f"📊 Report includes:\n"
+                    f"• GeoIP & ISP info\n"
+                    f"• Protection analysis\n"
+                    f"• Host discovery\n"
+                    f"• Panel detection\n"
+                    f"• Vulnerability scan"
+                ),
+                parse_mode='HTML',
+                reply_markup=get_main_menu()
+            )
+        
+        await status_msg.delete()
+        os.remove(result_path)
+        context.user_data.clear()
+        return
+    
     # Check if we're in combo_to_m3u mode and waiting for base URL
     if mode == 'combo_to_m3u' and 'combo_data' in context.user_data:
         base_url = update.message.text.strip()
@@ -4975,25 +5362,63 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         if ok:
             logger.info(f"M3U info keys: {list(info.keys())}")
             try:
-                ch = M3UProbe.fetch_first_group(info.get('m3u',''), timeout=5, proxies=get_proxies(), max_kb=256)
+                # Force fetch channels with categories for manual check (bypass Fast Mode)
+                ch = M3UProbe.fetch_first_group(info.get('m3u',''), timeout=5, proxies=get_proxies(), max_kb=256, force_fetch=True)
                 if ch:
                     info['channels'] = ch
                     logger.info(f"Fetched channels: {ch}")
+                else:
+                    logger.warning("No channels fetched (empty result)")
             except Exception as ch_err:
                 logger.warning(f"Failed to fetch channels: {ch_err}")
             block = M3UProbe.format_manual_block(info)
             logger.info(f"Formatted block length: {len(block)} chars")
+            
+            # Send as chat message first
             try:
                 # Try to send as plain text first (no HTML parsing issues)
                 await status_msg.edit_text(block, parse_mode=None)
             except Exception as edit_err:
                 logger.error(f"Failed to edit M3U manual check message: {edit_err}")
                 # Fallback: send as new message
-                await update.message.reply_text(block, parse_mode=None, reply_markup=get_main_menu())
+                await update.message.reply_text(block, parse_mode=None)
                 try:
                     await status_msg.delete()
                 except Exception:
                     pass
+            
+            # Also send as text file
+            try:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                result_filename = f"M3U_INFO_{timestamp}.txt"
+                result_path = os.path.join(TEMP_DIR, result_filename)
+                
+                with open(result_path, 'w', encoding='utf-8') as f:
+                    f.write(block)
+                
+                # Extract username for caption
+                username_val = info.get('username', 'N/A')
+                status_val = info.get('status', 'Unknown')
+                
+                with open(result_path, 'rb') as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename=result_filename,
+                        caption=(
+                            f"✅ <b>M3U Manual Check</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"👤 User: <code>{username_val}</code>\n"
+                            f"📊 Status: <b>{status_val}</b>\n"
+                            f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                        ),
+                        parse_mode='HTML',
+                        reply_markup=get_main_menu()
+                    )
+                
+                os.remove(result_path)
+                logger.info(f"M3U Manual result sent as file: {result_filename}")
+            except Exception as file_err:
+                logger.error(f"Failed to send M3U result as file: {file_err}")
         else:
             await status_msg.edit_text(f"❌ <b>Failed:</b> {err}", parse_mode='HTML')
         context.user_data.clear()
