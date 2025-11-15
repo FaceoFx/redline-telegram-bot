@@ -2207,22 +2207,50 @@ class M3UHostAnalyzer:
         lines.append(f"🏢 ISP: {geo.get('isp', 'Unknown')}")
         lines.append("")
         
-        # Protection Analysis
+        # Enhanced Protection Analysis
         has_cf = False
         provider = "none"
-        if HAS_REQUESTS and not WHOISLookup._is_ip(domain):
+        bypass_possible = True
+        
+        if HAS_REQUESTS:
+            # Check for Cloudflare
             try:
-                ns_list = WHOISLookup._dns_ns(domain)
-                has_cf = any('cloudflare' in (ns.get('host','').lower()) for ns in ns_list)
-                if has_cf:
+                test_r = Net.get(f"http://{domain}", timeout=5, allow_redirects=False)
+                headers = {k.lower(): v for k, v in test_r.headers.items()}
+                server = headers.get('server', '').lower()
+                
+                # Detect protection providers
+                if 'cloudflare' in server or 'cf-ray' in headers:
                     provider = "cloudflare"
+                    has_cf = True
+                    bypass_possible = False
+                elif 'sucuri' in server or 'x-sucuri' in headers:
+                    provider = "sucuri"
+                    bypass_possible = False
+                elif 'imperva' in server or 'x-cdn' in headers:
+                    provider = "imperva"
+                    bypass_possible = False
+                elif 'akamai' in server:
+                    provider = "akamai"
+                    bypass_possible = False
             except Exception:
                 pass
+            
+            # Additional DNS check for Cloudflare
+            if provider == "none" and not WHOISLookup._is_ip(domain):
+                try:
+                    ns_list = WHOISLookup._dns_ns(domain)
+                    has_cf = any('cloudflare' in (ns.get('host','').lower()) for ns in ns_list)
+                    if has_cf:
+                        provider = "cloudflare"
+                        bypass_possible = False
+                except Exception:
+                    pass
         
         lines.append("─────────────────────────")
         lines.append("🔐 Protection Analysis")
         lines.append(f"🔐 Provider: {provider.upper()}")
-        lines.append(f"{'❌' if has_cf else '✅'} Bypass: {'NO' if has_cf else 'YES'}")
+        lines.append(f"{'❌' if not bypass_possible else '✅'} Bypass: {'NO' if not bypass_possible else 'YES'}")
         lines.append(f"{'🔒' if has_cf else '🔓'} Cloudflare: {'YES' if has_cf else 'NO'}")
         lines.append("")
         
@@ -2281,6 +2309,19 @@ class M3UHostAnalyzer:
                             # Check for open API
                             if "user_info" in r.text or "server_info" in r.text:
                                 vulns.append("open_api")
+                        
+                        # Check for directory listing
+                        dir_test = f"{host_url}/"
+                        r2 = Net.get(dir_test, timeout=5)
+                        if r2.status_code == 200 and ("Index of" in r2.text or "Directory listing" in r2.text or "<title>Index of" in r2.text):
+                            vulns.append("directory_listing")
+                        
+                        # Check for exposed config
+                        config_test = f"{host_url}/config.php"
+                        r3 = Net.get(config_test, timeout=5)
+                        if r3.status_code == 200 and len(r3.text) > 100:
+                            vulns.append("config_exposure")
+                            
                     except Exception:
                         pass
                 
@@ -2345,7 +2386,7 @@ class M3UHostAnalyzer:
         lines.append("🛡️  SECURITY & PROTECTION ANALYSIS")
         lines.append("══════════════════════════════════════════════════")
         lines.append(f"🔒 Protection Provider  : {provider.upper()}")
-        lines.append(f"{'❌' if has_cf else '✅'} Bypass Status      : {'NO' if has_cf else 'YES'}")
+        lines.append(f"{'❌' if not bypass_possible else '✅'} Bypass Status      : {'NO' if not bypass_possible else 'YES'}")
         lines.append(f"🔒 Cloudflare Detection: {'YES' if has_cf else 'NO'}")
         lines.append("")
         
@@ -2373,15 +2414,23 @@ class M3UHostAnalyzer:
                     lines.append(f"      ⚠️ Vulnerabilities: {', '.join(panel['vulns'])}")
             lines.append("")
         
+        # Calculate statistics
+        analyzed_count = min(10, len(discovered_hosts))
+        speed = analyzed_count / duration if duration > 0 else 0
+        panel_rate = (len(panels_found) / analyzed_count * 100) if analyzed_count > 0 else 0
+        
         lines.append("══════════════════════════════════════════════════")
         lines.append("📊  ANALYSIS SUMMARY & STATISTICS")
         lines.append("══════════════════════════════════════════════════")
         lines.append(f"⏱️ Analysis Duration     : {duration:.1f} seconds")
-        lines.append(f"🌐 Total Hosts Analyzed  : {len(discovered_hosts)}")
-        lines.append(f"✅ Working Hosts Found   : {len(discovered_hosts)}")
+        lines.append(f"🌐 Total Hosts Analyzed  : {analyzed_count}")
+        lines.append(f"✅ Working Hosts Found   : {analyzed_count}")
         lines.append(f"🎯 Panels Detected       : {len(panels_found)}")
         lines.append(f"⚠️ Security Issues       : {len(set(vulnerabilities))} types")
+        lines.append(f"⚡ Analysis Speed        : {speed:.1f} hosts/sec")
         lines.append(f"📈 Success Rate          : 100.0%")
+        lines.append(f"🔧 Concurrent Workers    : 8 threads")
+        lines.append(f"🎯 Panel Detection Rate  : {panel_rate:.1f}%")
         lines.append("")
         
         lines.append("══════════════════════════════════════════════════")
@@ -3037,9 +3086,17 @@ def get_back_button() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def get_scan_another_menu(scan_type: str = "m3u") -> InlineKeyboardMarkup:
-    """Create scan another or back menu"""
+    """Create scan another or back menu (legacy - for M3U compatibility)"""
     keyboard = [
         [InlineKeyboardButton("🔄 Scan Another", callback_data=f"{scan_type}_manual")],
+        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_redo_menu(callback_data: str, redo_text: str = "🔄 Do It Again") -> InlineKeyboardMarkup:
+    """Create redo or back to menu buttons for any tool"""
+    keyboard = [
+        [InlineKeyboardButton(redo_text, callback_data=callback_data)],
         [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -3829,7 +3886,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📊 Scraped: {len(proxies)} • Working: {len(working)}"
                 ),
                 parse_mode='HTML',
-                reply_markup=get_main_menu()
+                reply_markup=get_redo_menu("proxy_finder", "🔄 Find More")
             )
         os.remove(result_path)
         context.user_data.clear()
@@ -3874,7 +3931,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption = (
                 "✅ <b>Valid</b>" if ok else "❌ <b>Invalid</b>"
             ) + f"\nHost: <code>{host}</code>\nUser: <code>{username}</code>\n"
-            await status_msg.edit_text(caption, parse_mode='HTML')
+            await status_msg.edit_text(caption, parse_mode='HTML', reply_markup=get_redo_menu("up_xtream_single", "🔄 Check Another"))
             context.user_data.clear()
             return
 
@@ -3951,12 +4008,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"📊 Channels: {len(channels):,}"
                     ),
                     parse_mode='HTML',
-                    reply_markup=get_main_menu()
+                    reply_markup=get_redo_menu("mac_to_m3u", "🔄 Convert More")
                 )
-            await status_msg.delete()
-            os.remove(result_path)
-            context.user_data.clear()
-            return
+        await status_msg.delete()
+        os.remove(result_path)
+        context.user_data.clear()
+        return
 
     # PHASE 3: MAC Host Single (host then mac)
     if mode == 'mac_host_single':
@@ -3993,37 +4050,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     detail = f"Error: {str(e)}"
             await status_msg.edit_text(
                 ("✅ <b>Reachable</b>" if ok else "❌ <b>Unreachable</b>") + f"\nHost: <code>{host}</code>\nMAC: <code>{mac}</code>",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=get_redo_menu("mac_host_single", "🔄 Check Another")
             )
             context.user_data.clear()
             return
     
-    # MAC Scanner (batch) - handle host input
-    if mode == 'mac_scanner' and context.user_data.get('step') == 'ask_host':
-        host = update.message.text.strip()
-        
-        # Validate and normalize host
-        if not host:
-            await update.message.reply_html("❌ <b>Invalid host</b>")
-            return
-        
-        if not host.startswith(('http://', 'https://')):
-            host = 'http://' + host
-        
-        context.user_data['host'] = host.rstrip('/')
-        context.user_data['step'] = 'await_file'
-        await update.message.reply_html(
-            f"✅ <b>Host saved!</b>\n"
-            f"<code>{host}</code>\n\n"
-            f"📤 <b>Now send a file containing:</b>\n"
-            f"• MAC addresses (one per line)\n"
-            f"• Format: <code>00:1A:79:XX:XX:XX</code>\n"
-            f"• Both colon and dash separators supported\n\n"
-            f"⏳ Waiting for file..."
-        )
-        return
-
-    # PHASE 3: Combo Generator
+    # Combo Generator
     if mode == 'combo_generator':
         spec = (update.message.text or '').strip()
         parts = [p.strip() for p in spec.split(',')]
@@ -4055,1354 +4088,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📊 Total: {len(combos):,}"
                 ),
                 parse_mode='HTML',
-                reply_markup=get_main_menu()
+                reply_markup=get_redo_menu("combo_generator", "🔄 Generate More")
             )
         os.remove(result_path)
         context.user_data.clear()
         return
-    # === Phase 3: U:P Xtream Single ===
-    if data == "up_xtream_single":
-        context.user_data.clear()
-        context.user_data['mode'] = 'up_xtream_single'
-        context.user_data['step'] = 'ask_host'
-        await safe_edit_or_send(
-            query,
-            "<b>⚡ User:Pass Xtream Check (Single)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-        return
-
-    # === Phase 3: M3U Manual ===
-    if data == "m3u_manual":
-        context.user_data.clear()
-        context.user_data['mode'] = 'm3u_manual'
-        await safe_edit_or_send(
-            query,
-            "<b>🔍 M3U Manual Check</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📝 Send a single M3U URL to test",
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-        return
-
-    # === Phase 3: MAC → M3U (interactive) ===
-    if data == "mac_to_m3u":
-        context.user_data.clear()
-        context.user_data['mode'] = 'mac_to_m3u'
-        context.user_data['step'] = 'ask_host'
-        await safe_edit_or_send(
-            query,
-            "<b>↩️ MAC → M3U</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-        return
-
-    # === Phase 3: MAC Host Single ===
-    if data == "mac_host_single":
-        context.user_data.clear()
-        context.user_data['mode'] = 'mac_host_single'
-        context.user_data['step'] = 'ask_host'
-        await safe_edit_or_send(
-            query,
-            "<b>📱 MAC Host Check (Single)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📝 Send IPTV host (with port). Example: <code>http://example.com:8080</code>",
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-        return
-
-    # === Phase 3: Combo Generator ===
-    if data == "combo_generator":
-        context.user_data.clear()
-        context.user_data['mode'] = 'combo_generator'
-        await safe_edit_or_send(
-            query,
-            "<b>🧪 Combo Generator</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📝 Send input in format: <code>prefix,password,start,end</code>\n"
-            "Example: <code>user,pass,1,100</code> → user1:pass ... user100:pass",
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-        return
-
-
-    # PHASE 2: KEYWORD SEARCHER (keywords after file)
-    if mode == 'keyword_searcher' and 'search_text' in context.user_data:
-        kw_line = update.message.text or ''
-        keywords = [k.strip() for k in kw_line.split(',') if k.strip()]
-        if not keywords:
-            await update.message.reply_html("❌ <b>No keywords provided</b>")
-            return
-        results = KeywordSearcher.search(context.user_data['search_text'], keywords)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_filename = f"KEYWORD_SEARCH_{timestamp}.txt"
-        result_path = os.path.join(TEMP_DIR, result_filename)
-        with open(result_path, 'w', encoding='utf-8') as f:
-            f.write(f"# Keyword Search Results\n")
-            f.write(f"# Keywords: {', '.join(keywords)}\n\n")
-            if not results:
-                f.write("No matches found\n")
-            else:
-                for kw, lines in results.items():
-                    f.write(f"# === {kw} ({len(lines)}) ===\n")
-                    for ln in lines:
-                        f.write(ln + "\n")
-                    f.write("\n")
-        with open(result_path, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=result_filename,
-                caption=(
-                    f"✅ <b>Keyword Search Complete</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"🔎 Keywords: {len(keywords)}"
-                ),
-                parse_mode='HTML',
-                reply_markup=get_main_menu()
-            )
-        os.remove(result_path)
-        context.user_data.clear()
-        return
-    
-    # Mode selection for extractions
-    if data.startswith("mode_"):
-        mode = data.replace("mode_", "")
-        context.user_data['mode'] = mode
-        context.user_data['action'] = 'extract'
-        
-        mode_info = {
-            'np': ('📱 N:P (Phone:Password)', 'Extract phone numbers with passwords'),
-            'up': ('👤 U:P (Username:Password)', 'Extract usernames with passwords (no emails)'),
-            'mp': ('📧 M:P (Email:Password)', 'Extract emails with passwords'),
-            'm3u': ('🔗 M3U Links', 'Extract M3U and M3U8 links (Xtream API)'),
-            'mac': ('🔑 MAC:KEY', 'Extract MAC addresses with keys'),
-            'all': ('⭐ Extract ALL', 'Extract all combo types at once')
-        }
-        
-        title, description = mode_info.get(mode, ('Unknown', 'Unknown'))
-        
-        text = (
-            f"<b>{title}</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📝 {description}\n\n"
-            "📤 <b>Send your file now:</b>\n"
-            "• Supported: .txt, .log files\n"
-            "• Multiple files allowed\n"
-            "• Instant processing!\n\n"
-            "⏳ Waiting for file..."
-        )
-        
-        await safe_edit_or_send(
-            query,
-            text,
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-    
-    
-    # M3U Checker
-    if data == "check_m3u":
-        context.user_data['mode'] = 'check_m3u'
-        context.user_data['action'] = 'check'
-        text = (
-            "✅ <b>M3U Link Checker</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🔍 Check M3U links for validity (Live validation)\n\n"
-            "📤 <b>Send a file containing:</b>\n"
-            "• M3U links (one per line)\n"
-            "• Xtream API URLs\n"
-            "• M3U8 links\n\n"
-            "⚡ <b>Features:</b>\n"
-            "• Multi-threaded checking (super fast!)\n"
-            "• Supports up to 1000 links\n"
-            "• Detailed results (ALIVE/DEAD/ERROR)\n\n"
-            "⏳ Send your M3U file..."
-        )
-        await safe_edit_or_send(query, text, parse_mode='HTML', reply_markup=get_back_button())
-    
-    # M3U to Combo
-    elif data == "m3u_to_combo":
-        context.user_data['mode'] = 'm3u_to_combo'
-        context.user_data['action'] = 'convert'
-        text = (
-            "🔄 <b>M3U → Combo Converter</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🔀 Convert M3U links to username:password format\n\n"
-            "📤 <b>Send M3U file containing:</b>\n"
-            "• Xtream API URLs\n"
-            "• get.php links with username/password\n\n"
-            "✨ <b>Bot will extract:</b>\n"
-            "• username:password from each link\n"
-            "• Auto-cleanup and deduplicate\n"
-            "• Sorted results\n\n"
-            "⏳ Send your M3U file..."
-        )
-        await safe_edit_or_send(query, text, parse_mode='HTML', reply_markup=get_back_button())
-    
-    # Combo to M3U
-    elif data == "combo_to_m3u":
-        context.user_data['mode'] = 'combo_to_m3u'
-        context.user_data['action'] = 'convert'
-        text = (
-            "🔄 <b>Combo → M3U Converter</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🔀 Convert username:password to M3U format\n\n"
-            "📤 <b>Step 1: Send combo file</b>\n"
-            "• username:password format\n"
-            "• One combo per line\n\n"
-            "📝 <b>Step 2: Send Base URL</b> (next message)\n"
-            "• Example: http://example.com:8080\n"
-            "• Bot adds /get.php?username=...&password=...\n\n"
-            "⏳ Send your combo file first..."
-        )
-        await safe_edit_or_send(query, text, parse_mode='HTML', reply_markup=get_back_button())
-    
-    # M3U to MAC
-    elif data == "m3u_to_mac":
-        context.user_data['mode'] = 'm3u_to_mac'
-        context.user_data['action'] = 'convert'
-        text = (
-            "🔀 <b>M3U → MAC Converter</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🔀 Extract MAC addresses from M3U URLs\n\n"
-            "📤 <b>Send M3U file:</b>\n"
-            "• M3U playlist with MAC links\n"
-            "• Bot extracts MAC addresses\n\n"
-            "✅ <b>Output:</b>\n"
-            "• Clean MAC addresses\n"
-            "• Deduplicated\n\n"
-            "⏳ Send your M3U file..."
-        )
-        await safe_edit_or_send(query, text, parse_mode='HTML', reply_markup=get_back_button())
-    
-    # Back to menu
-    elif data == "back":
-        welcome_text = (
-            "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        await safe_edit_or_send(
-            query,
-            welcome_text,
-            parse_mode='HTML',
-            reply_markup=get_main_menu()
-        )
-    
-    # Help
-    elif data == "help":
-        help_text = (
-            "📖 <b>User Guide</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "<b>How to use:</b>\n\n"
-            "1️⃣ <b>Select extraction type</b>\n"
-            "   • N:P for phone numbers\n"
-            "   • U:P for usernames\n"
-            "   • M:P for emails\n"
-            "   • M3U for links\n"
-            "   • MAC:KEY for MAC addresses\n"
-            "   • ALL to extract everything\n\n"
-            "2️⃣ <b>Send your log file</b>\n"
-            "   • .txt or .log format\n"
-            "   • Multiple files allowed\n\n"
-            "3️⃣ <b>Receive results</b>\n"
-            "   • Clean text file ready to use\n"
-            "   • With hit count\n\n"
-            "⚡ Processing is instant!\n"
-            "🔒 Privacy: Files deleted after processing"
-        )
-        await query.edit_message_text(
-            help_text,
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-    
-    # Stats
-    elif data == "stats":
-        stats_text = (
-            "📊 <b>Bot Statistics</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 User: {query.from_user.mention_html()}\n"
-            f"🆔 ID: <code>{query.from_user.id}</code>\n\n"
-            "🔥 <b>REDLINE V15.0 Enhanced</b>\n"
-            "⚡ Version: 2.0\n"
-            "🤖 Status: Online\n"
-            "🛠️ Tier 1 Features: Active\n\n"
-            "✨ Ready to use!"
-        )
-        await query.edit_message_text(
-            stats_text,
-            parse_mode='HTML',
-            reply_markup=get_back_button()
-        )
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle file uploads and process extraction - ALL ENGLISH"""
-    mode = context.user_data.get('mode')
-    action = context.user_data.get('action', 'extract')
-    
-    # Check if user has active session (used /redline and selected option)
-    if not mode:
-        await update.message.reply_text(
-            "⚠️ Please select an option first\n"
-            "Use /redline to show menu"
-        )
-        return
-    
-    # Check if user is already processing a file (one file at a time)
-    if context.user_data.get('processing_file'):
-        await update.message.reply_text(
-            "⚠️ <b>Please wait!</b>\n\n"
-            "You're already processing a file.\n"
-            "Wait for it to finish before sending another.\n\n"
-            "<i>Only one file at a time per user</i>",
-            parse_mode='HTML'
-        )
-        return
-    
-    # Set processing lock (will be released in finally block)
-    context.user_data['processing_file'] = True
-    
-    try:
-        # Check file size
-        file_size = update.message.document.file_size
-        if file_size > MAX_FILE_SIZE:
-            await update.message.reply_text(
-                f"❌ <b>File too large!</b>\n\n"
-                f"📊 <b>Limits:</b>\n"
-                f"• Max file size: <code>{format_file_size(MAX_FILE_SIZE)}</code>\n"
-                f"• Max lines: <code>{format_number(MAX_LINES)}</code>\n\n"
-                f"📁 <b>Your file:</b> <code>{format_file_size(file_size)}</code>\n\n"
-                f"💡 <b>Tips:</b>\n"
-                f"• Split large files into smaller chunks\n"
-                f"• Remove duplicate lines first\n"
-                f"• Use compression (gzip) if possible\n\n"
-                f"<i>Limits protect server resources on Koyeb</i>",
-                parse_mode='HTML'
-            )
-            return
-        
-        # Show processing message
-        status_msg = await update.message.reply_text(
-            "⏳ <b>Processing...</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📥 Downloading file...",
-            parse_mode='HTML'
-        )
-        # Download file
-        file = await update.message.document.get_file()
-        filename = update.message.document.file_name or "file.txt"
-        file_path = os.path.join(TEMP_DIR, f"{update.effective_user.id}_{file.file_id}_{filename}")
-        await file.download_to_drive(file_path)
-        
-        # Check line count (memory protection)
-        line_count = count_lines_efficient(file_path, MAX_LINES + 1)
-        if line_count > MAX_LINES:
-            await status_msg.edit_text(
-                f"❌ <b>Too many lines!</b>\n\n"
-                f"📊 <b>Limits:</b>\n"
-                f"• Max lines: <code>{format_number(MAX_LINES)}</code>\n"
-                f"• Your file: <code>{format_number(line_count)}+</code>\n\n"
-                f"💡 <b>Solution:</b>\n"
-                f"• Split file into {(line_count // MAX_LINES) + 1} parts\n"
-                f"• Remove empty lines\n"
-                f"• Process in batches\n\n"
-                f"<i>This protects against memory exhaustion</i>",
-                parse_mode='HTML'
-            )
-            os.remove(file_path)
-            context.user_data.clear()
-            return
-        
-        # Update status
-        await status_msg.edit_text(
-            f"⏳ <b>Processing...</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📄 Reading {format_number(line_count)} lines...",
-            parse_mode='HTML'
-        )
-        
-        # Read file content (memory-safe)
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            text = f.read()
-        
-        # === HANDLE U:P XTREAM AUTO (batch) ===
-        if mode == 'up_xtream_auto' and context.user_data.get('step') == 'await_file':
-            await status_msg.edit_text(
-                "⏳ <b>Probing Xtream Accounts...</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🔍 player_api.php",
-                parse_mode='HTML'
-            )
-            host = context.user_data.get('host') or ''
-            combos_raw = [ln.strip() for ln in text.split('\n') if ':' in ln]
-            combos = []
-            for ln in combos_raw:
-                u, p = ln.split(':', 1)
-                if u and p:
-                    combos.append((u.strip(), p.strip()))
-            if not combos:
-                await status_msg.edit_text("❌ <b>No combos found!</b>", parse_mode='HTML')
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            limit = int(GLOBAL_SETTINGS.get('combo_limit', 500))
-            combos = combos[:limit]
-            workers = int(GLOBAL_SETTINGS.get('workers', 12))
-            include_ch = bool(GLOBAL_SETTINGS.get('include_channels_auto'))
-            done = 0
-            found = 0
-            total = len(combos)
-            blocks: List[str] = []
-            
-            # Initialize ProgressTracker
-            progress = ProgressTracker(status_msg, total, "Probing Xtream Accounts")
-            
-            # show typing while processing
-            try:
-                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-            except Exception:
-                pass
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(UpProbe.probe_up, host, u, p, 8, get_proxies()): (u, p) for (u, p) in combos}
-                for fu in as_completed(futs):
-                    ok, info, err = fu.result()
-                    done += 1
-                    if ok:
-                        if include_ch:
-                            try:
-                                ch = M3UProbe.fetch_first_group(info.get('m3u',''), timeout=3, proxies=get_proxies(), max_kb=64)
-                                if ch:
-                                    info['channels'] = ch
-                            except Exception:
-                                pass
-                        blocks.append(M3UProbe.format_auto_block(info))
-                        found += 1
-                    
-                    # Update progress
-                    if done % 10 == 0 or done == total:
-                        await progress.update(done)
-            
-            # Complete progress
-            await progress.complete(f"\n✅ Valid: {found}/{total}")
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"UP_XTREAM_INFO_{timestamp}.txt"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            with open(result_path, 'w', encoding='utf-8') as f:
-                if blocks:
-                    f.write("\n".join(blocks) + "\n")
-                else:
-                    f.write("# No valid accounts\n")
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>U:P Xtream Auto Complete</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 Valid: {len(blocks)} / {len(combos)}"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            await status_msg.delete()
-            os.remove(file_path)
-            os.remove(result_path)
-            context.user_data.clear()
-            return
-        
-        # === HANDLE MAC SCANNER (batch) ===
-        if mode == 'mac_scanner' and context.user_data.get('step') == 'await_file':
-            await status_msg.edit_text(
-                "⏳ <b>Scanning MAC Addresses...</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🔍 Testing portal endpoints...",
-                parse_mode='HTML'
-            )
-            
-            host = context.user_data.get('host') or ''
-            
-            # Extract MAC addresses from file
-            macs_raw = [ln.strip() for ln in text.split('\n') if ln.strip()]
-            macs = []
-            
-            # Validate MAC format (support both colon and dash separators)
-            mac_pattern = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
-            for mac in macs_raw:
-                mac = mac.upper()
-                if mac_pattern.match(mac):
-                    # Normalize to colon separator
-                    mac = mac.replace('-', ':')
-                    macs.append(mac)
-            
-            if not macs:
-                await status_msg.edit_text("❌ <b>No valid MAC addresses found!</b>", parse_mode='HTML')
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            
-            # Apply limit
-            limit = int(GLOBAL_SETTINGS.get('combo_limit', 500))
-            macs = macs[:limit]
-            workers = int(GLOBAL_SETTINGS.get('workers', 12))
-            
-            done = 0
-            found = 0
-            total = len(macs)
-            blocks: List[str] = []
-            
-            # Initialize ProgressTracker
-            progress = ProgressTracker(status_msg, total, "Scanning MAC Addresses")
-            
-            # Show typing
-            try:
-                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-            except Exception:
-                pass
-            
-            # Probe MACs in parallel
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(MACProbe.probe_mac, host, mac, 8, get_proxies()): mac for mac in macs}
-                for fu in as_completed(futs):
-                    ok, info, err = fu.result()
-                    done += 1
-                    if ok:
-                        blocks.append(MACProbe.format_mac_result(info))
-                        found += 1
-                    
-                    # Update progress
-                    if done % 10 == 0 or done == total:
-                        await progress.update(done)
-            
-            # Complete progress
-            await progress.complete(f"\n✅ Valid: {found}/{total}")
-            
-            # Create result file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"MAC_SCANNER_{timestamp}.txt"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            
-            with open(result_path, 'w', encoding='utf-8') as f:
-                if blocks:
-                    f.write(f"# MAC Scanner Results\n")
-                    f.write(f"# Host: {host}\n")
-                    f.write(f"# Valid MACs: {found} / {total}\n")
-                    f.write(f"# Scanned: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-                    f.write("\n".join(blocks) + "\n")
-                else:
-                    f.write("# No valid MAC addresses found\n")
-            
-            # Send result
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>MAC Scanner Complete</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"🎯 Host: <code>{host}</code>\n"
-                        f"📊 Valid: {found} / {total}"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            
-            await status_msg.delete()
-            os.remove(result_path)
-            os.remove(file_path)
-            context.user_data.clear()
-            return
-        
-        # === HANDLE M3U LINK CHECKER (AUTO, REDLINE info) ===
-        if mode == 'check_m3u':
-            # Show M3U settings being used
-            s = GLOBAL_SETTINGS
-            settings_info = []
-            if s.get('m3u_fast_mode'):
-                settings_info.append("⚡ Fast Mode")
-            if s.get('m3u_use_proxy'):
-                settings_info.append("🔌 Proxy")
-            if s.get('m3u_bypass_mode'):
-                settings_info.append("🛡️ Bypass")
-            if s.get('m3u_all_user_agents'):
-                settings_info.append("🌐 Multi-UA")
-            
-            settings_line = " | ".join(settings_info) if settings_info else "Standard"
-            
-            await status_msg.edit_text(
-                f"⏳ <b>Starting M3U Probe...</b>\n\n"
-                f"⚙️ Settings: <code>{settings_line}</code>",
-                parse_mode='HTML'
-            )
-            links = [line.strip() for line in text.split('\n') if line.strip().startswith(('http://','https://'))]
-            if not links:
-                await status_msg.edit_text("❌ <b>No M3U links found!</b>", parse_mode='HTML')
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            limit = int(GLOBAL_SETTINGS.get('m3u_limit', 1000))
-            links = links[:limit]
-            workers = int(GLOBAL_SETTINGS.get('workers', 12))
-            include_ch = bool(GLOBAL_SETTINGS.get('include_channels_auto'))
-            done = 0
-            found = 0
-            total = len(links)
-            blocks: List[str] = []
-            
-            # Initialize ProgressTracker
-            progress = ProgressTracker(status_msg, total, "Probing M3U Links")
-            
-            # show typing while processing
-            try:
-                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-            except Exception:
-                pass
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(M3UProbe.probe, u, 8, get_proxies()): u for u in links}
-                for fu in as_completed(futs):
-                    ok, info, err = fu.result()
-                    done += 1
-                    if ok:
-                        if include_ch:
-                            try:
-                                ch = M3UProbe.fetch_first_group(info.get('m3u',''), timeout=3, proxies=get_proxies(), max_kb=64)
-                                if ch:
-                                    info['channels'] = ch
-                            except Exception:
-                                pass
-                        blocks.append(M3UProbe.format_auto_block(info))
-                        found += 1
-                    
-                    # Update progress
-                    if done % 10 == 0 or done == total:
-                        await progress.update(done)
-            
-            # Complete progress
-            await progress.complete(f"\n✅ Valid: {found}/{total}")
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"M3U_INFO_{timestamp}.txt"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            with open(result_path, 'w', encoding='utf-8') as f:
-                if blocks:
-                    f.write("\n".join(blocks) + "\n")
-                else:
-                    f.write("# No valid accounts\n")
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>M3U Auto Complete</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 Valid: {len(blocks)} / {len(links)}"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            await status_msg.delete()
-            os.remove(file_path)
-            os.remove(result_path)
-            context.user_data.clear()
-            return
-
-        # === PHASE 2: KEYWORD SEARCHER (file first) ===
-        elif mode == 'keyword_searcher':
-            # store file content and ask for keywords
-            context.user_data['search_text'] = text
-            await status_msg.edit_text(
-                "✅ <b>File received!</b>\n\n"
-                "📝 Now send <b>keywords</b> (comma separated)\n\n"
-                "Example: <code>login, password, xtream, player_api</code>",
-                parse_mode='HTML'
-            )
-            os.remove(file_path)
-            return
-
-        # === PHASE 2: STREAMCREED FINDER ===
-        elif mode == 'streamcreed_finder':
-            keys = StreamCreedFinder.find(text)
-            if not keys:
-                await status_msg.edit_text(
-                    "❌ <b>No keys found!</b>",
-                    parse_mode='HTML'
-                )
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"STREAMCREED_KEYS_{timestamp}.txt"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            with open(result_path, 'w', encoding='utf-8') as f:
-                f.write(f"# StreamCreed Keys\n# Found: {len(keys)}\n\n")
-                for k in sorted(keys):
-                    f.write(k + "\n")
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>Keys Found!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"🔑 Total: {len(keys):,}"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            await status_msg.delete()
-            os.remove(file_path)
-            os.remove(result_path)
-            context.user_data.clear()
-            return
-        
-        # === HANDLE M3U TO COMBO CONVERTER ===
-        elif mode == 'm3u_to_combo':
-            await status_msg.edit_text(
-                "⏳ <b>Converting M3U→Combo...</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🔄 Extracting credentials...",
-                parse_mode='HTML'
-            )
-            
-            results = M3UConverter.m3u_to_combo(text)
-            
-            if not results:
-                await status_msg.edit_text(
-                    "❌ <b>No credentials found!</b>\n\n"
-                    "Make sure M3U links contain username/password",
-                    parse_mode='HTML'
-                )
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            
-            # Create result file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"M3U_TO_COMBO_{timestamp}.txt"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            
-            with open(result_path, 'w', encoding='utf-8') as f:
-                f.write(f"# M3U to Combo Conversion\n")
-                f.write(f"# Converted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"# Total Combos: {len(results)}\n")
-                f.write("#" + "="*50 + "\n\n")
-                f.write('\n'.join(sorted(results)))
-            
-            # Send result
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>M3U→Combo Complete!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 Extracted: {len(results):,} combos\n"
-                        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            
-            await status_msg.delete()
-            os.remove(file_path)
-            os.remove(result_path)
-            context.user_data.clear()
-            return
-        
-        # === HANDLE COMBO TO M3U CONVERTER ===
-        elif mode == 'combo_to_m3u':
-            # Check if we have combo data stored
-            if 'combo_data' not in context.user_data:
-                # First file upload - store combo data
-                context.user_data['combo_data'] = text
-                os.remove(file_path)
-                
-                await status_msg.edit_text(
-                    "✅ <b>Combo file received!</b>\n"
-                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    "📝 Now send the <b>Base URL</b>\n\n"
-                    "<b>Example:</b>\n"
-                    "<code>http://example.com:8080</code>\n\n"
-                    "⚡ Bot will create M3U links like:\n"
-                    "<code>http://example.com:8080/get.php?username=XXX&password=YYY&type=m3u_plus</code>",
-                    parse_mode='HTML'
-                )
-                return
-            else:
-                # This shouldn't happen but handle it
-                await status_msg.edit_text(
-                    "⚠️ <b>Please send Base URL as text message</b>\n\n"
-                    "Not as a file!",
-                    parse_mode='HTML'
-                )
-                os.remove(file_path)
-                return
-        
-        # === HANDLE M3U TO MAC CONVERTER (file input) ===
-        elif mode == 'm3u_to_mac':
-            await status_msg.edit_text(
-                "⏳ <b>Converting M3U→MAC...</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🔄 Extracting stream IDs...",
-                parse_mode='HTML'
-            )
-            mac_urls = MACConverter.m3u_to_mac(text)
-            if not mac_urls:
-                await status_msg.edit_text(
-                    "❌ <b>No valid M3U links found!</b>",
-                    parse_mode='HTML'
-                )
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"M3U_TO_MAC_{timestamp}.m3u"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            with open(result_path, 'w', encoding='utf-8') as f:
-                f.write('#EXTM3U\n')
-                for url in sorted(mac_urls):
-                    f.write(f"{url}\n")
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>M3U→MAC Complete!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 URLs: {len(mac_urls):,}\n"
-                        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            await status_msg.delete()
-            os.remove(file_path)
-            os.remove(result_path)
-            context.user_data.clear()
-            return
-
-        # === HANDLE PANEL SEARCHER ===
-        elif mode == 'panel_searcher':
-            await status_msg.edit_text(
-                "⏳ <b>Searching panels...</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🔎 Detecting IPTV/XUI endpoints...",
-                parse_mode='HTML'
-            )
-            panels = PanelSearcher.find(text)
-            if not panels:
-                await status_msg.edit_text(
-                    "❌ <b>No panel URLs found!</b>",
-                    parse_mode='HTML'
-                )
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"PANEL_SEARCH_{timestamp}.txt"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            with open(result_path, 'w', encoding='utf-8') as f:
-                f.write(f"# Logs Panel Searcher\n")
-                f.write(f"# Found: {len(panels)}\n")
-                f.write("#" + "="*50 + "\n\n")
-                for u in sorted(panels):
-                    f.write(u + "\n")
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>Panel Search Complete!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 Found: {len(panels):,} panels"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            await status_msg.delete()
-            os.remove(file_path)
-            os.remove(result_path)
-            context.user_data.clear()
-            return
-
-        # === HANDLE CHECK LIVE PANELS ===
-        elif mode == 'check_panels':
-            await status_msg.edit_text(
-                "⏳ <b>Checking panels...</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "🔎 Categorizing panels...",
-                parse_mode='HTML'
-            )
-            urls = [line.strip() for line in text.split('\n') if line.strip().startswith(('http://','https://'))]
-            if not urls:
-                await status_msg.edit_text(
-                    "❌ <b>No URLs found!</b>",
-                    parse_mode='HTML'
-                )
-                os.remove(file_path)
-                context.user_data.clear()
-                return
-            urls = urls[:1000]
-            categories = {k: [] for k in [
-                'VALID','VPN_NEEDED','WAF','CAPTCHA','DNS_ERROR','TIMEOUT','INVALID','ERROR']}
-            with ThreadPoolExecutor(max_workers=12) as ex:
-                futs = {ex.submit(PanelChecker.categorize, u, 3, PROXY_CONFIG): u for u in urls}
-                for fu in as_completed(futs):
-                    cat, det = fu.result()
-                    u = futs[fu]
-                    categories.setdefault(cat, []).append((u, det))
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"PANELS_CHECK_{timestamp}.txt"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            with open(result_path, 'w', encoding='utf-8') as f:
-                f.write(f"# Check Live Panels (Categorized)\n")
-                total_valid = len(categories.get('VALID', []))
-                f.write(f"# Checked: {len(urls)} | VALID: {total_valid}\n")
-                f.write("#" + "="*50 + "\n\n")
-                order = ['VALID','VPN_NEEDED','WAF','CAPTCHA','DNS_ERROR','TIMEOUT','INVALID','ERROR']
-                for cat in order:
-                    items = categories.get(cat, [])
-                    if not items:
-                        continue
-                    f.write(f"# ===== {cat} ({len(items)}) =====\n")
-                    for u, det in items:
-                        suffix = f"  # {det}" if det else ""
-                        f.write(f"{u}{suffix}\n")
-                    f.write("\n")
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>Panels Check Complete!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 VALID: {len(categories.get('VALID', []))} / {len(urls)}"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            await status_msg.delete()
-            os.remove(file_path)
-            os.remove(result_path)
-            context.user_data.clear()
-            return
-        
-        # Update status for regular extractions
-        await status_msg.edit_text(
-            f"⏳ <b>Processing...</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🔍 Extracting data...",
-            parse_mode='HTML'
-        )
-        
-        # Extract based on mode
-        extractor = RedlineExtractor()
-        results = set()
-        result_type = mode.upper()
-        
-        if mode == 'np':
-            results = extractor.extract_np(text)
-        elif mode == 'up':
-            results = extractor.extract_up(text)
-        elif mode == 'mp':
-            results = extractor.extract_mp(text)
-        elif mode == 'm3u':
-            results = extractor.extract_m3u(text)
-        elif mode == 'mac':
-            results = extractor.extract_mac_key(text)
-        elif mode == 'all':
-            all_results = extractor.extract_all(text)
-            # Combine all results
-            combined = []
-            for key, items in all_results.items():
-                if items:
-                    combined.append(f"\n# ===== {key.upper()} ({len(items)} found) =====")
-                    combined.extend(sorted(items))
-            results = set(combined)
-            result_type = "ALL_COMBOS"
-        
-        # Check if results found
-        if not results:
-            await status_msg.edit_text(
-                "❌ <b>No results found!</b>\n\n"
-                "Make sure the file contains the required data",
-                parse_mode='HTML'
-            )
-            # Clean up
-            os.remove(file_path)
-            context.user_data.clear()
-            return
-        
-        # Create result file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_filename = f"{result_type}_{timestamp}.txt"
-        result_path = os.path.join(TEMP_DIR, result_filename)
-        
-        # Write results
-        with open(result_path, 'w', encoding='utf-8') as f:
-            f.write(f"# REDLINE V15.0 - {result_type}\n")
-            f.write(f"# Extracted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"# Total Found: {len(results)}\n")
-            f.write("#" + "="*50 + "\n\n")
-            f.write('\n'.join(sorted(results)))
-        
-        # Send result file
-        with open(result_path, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=result_filename,
-                caption=(
-                    f"✅ <b>Extraction Complete!</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📊 Type: {result_type}\n"
-                    f"🎯 Results: {len(results):,}\n"
-                    f"📅 Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                ),
-                parse_mode='HTML',
-                reply_markup=get_main_menu()
-            )
-        
-        # Delete status message
-        await status_msg.delete()
-        
-        # Clean up files
-        os.remove(file_path)
-        os.remove(result_path)
-        
-        # Clear user mode
-        context.user_data.clear()
-        
-        # Post to channel (optional): use first allowed channel if set
-        try:
-            target_channel = next(iter(ALLOWED_CHANNEL_IDS)) if ALLOWED_CHANNEL_IDS else None
-            if target_channel is not None:
-                await context.bot.send_message(
-                    chat_id=target_channel,
-                    text=(
-                        f"📊 <b>New Extraction</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"👤 User: {update.effective_user.mention_html()}\n"
-                        f"📁 Type: {result_type}\n"
-                        f"🎯 Results: {len(results):,}\n"
-                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                    ),
-                    parse_mode='HTML'
-                )
-        except Exception as e:
-            logger.warning(f"Could not post to channel: {e}")
-        
-    except Exception as e:
-        logger.error("="*70)
-        logger.error("❌ ERROR IN handle_document")
-        logger.error(f"Error Type: {type(e).__name__}")
-        logger.error(f"Error Message: {e}")
-        logger.error("📍 FULL TRACEBACK:")
-        logger.error(traceback.format_exc())
-        logger.error("="*70)
-        
-        await status_msg.edit_text(
-            f"❌ <b>Error occurred</b>\n\n"
-            f"Please try again\n"
-            f"Error: {str(e)}",
-            parse_mode='HTML'
-        )
-        
-        # Clean up on error
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        context.user_data.clear()
-    finally:
-        # Always release the processing lock
-        context.user_data.pop('processing_file', None)
-
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages - for Base URL input and Phase 1 flows"""
-    if not allowed_chat(update):
-        try:
-            chat = update.effective_chat
-            txt = getattr(update.effective_message,'text',None)
-            logger.info(f"Blocked text from chat type={getattr(chat,'type',None)} id={getattr(chat,'id',None)} text={txt}")
-        except Exception:
-            pass
-        return
-    if update.effective_chat and not _allow_rate(update.effective_chat.id):
-        await send_rate_limit_warning(update)
-        return
-    mode = context.user_data.get('mode')
-    # Support /redline in channels or allowed private
-    if update.effective_message and getattr(update.effective_message, 'text', None):
-        txt = update.effective_message.text.strip()
-        if txt.startswith('/redline'):
-            await start(update, context)
-            return
-    
-    # WHOIS Lookup handler
-    if mode == 'whois_lookup':
-        target = update.message.text.strip()
-        status_msg = await update.message.reply_html("⏳ <b>Running WHOIS...</b>")
-        tgt, report = WHOISLookup.whois_report(target)
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_filename = f"WHOIS_{timestamp}.txt"
-        result_path = os.path.join(TEMP_DIR, result_filename)
-        with open(result_path, 'w', encoding='utf-8') as f:
-            f.write(report + "\n")
-        
-        caption = f"🌐 <b>WHOIS:</b> <code>{tgt}</code>"
-        
-        with open(result_path, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=result_filename,
-                caption=caption,
-                parse_mode='HTML',
-                reply_markup=get_main_menu()
-            )
-        await status_msg.delete()
-        os.remove(result_path)
-        context.user_data.clear()
-        return
-    
-    # M3U Host Analyzer handler
-    if mode == 'm3u_host_analyzer':
-        m3u_url = update.message.text.strip()
-        
-        # Validate URL
-        if not m3u_url.startswith(('http://', 'https://')):
-            await update.message.reply_html(
-                "❌ <b>Invalid URL!</b>\n\n"
-                "URL must start with http:// or https://\n\n"
-                "<b>Example:</b>\n"
-                "<code>http://example.com/get.php?username=user&password=pass&type=m3u_plus</code>",
-                parse_mode='HTML'
-            )
-            return
-        
-        status_msg = await update.message.reply_html(
-            "🔍 <b>Analyzing M3U Host...</b>\n\n"
-            "⏳ This may take 10-30 seconds...\n"
-            "🔎 Discovering hosts\n"
-            "🌐 Running GeoIP lookup\n"
-            "🎯 Detecting panels\n"
-            "⚠️ Scanning vulnerabilities"
-        )
-        
-        try:
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        except Exception:
-            pass
-        
-        # Run analysis
-        report = M3UHostAnalyzer.analyze(m3u_url, timeout=10)
-        
-        # Create result file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_filename = f"M3U_HOST_ANALYSIS_{timestamp}.txt"
-        result_path = os.path.join(TEMP_DIR, result_filename)
-        
-        with open(result_path, 'w', encoding='utf-8') as f:
-            f.write(report)
-        
-        # Extract domain for caption
-        try:
-            parsed = urlparse(m3u_url)
-            domain = parsed.hostname or parsed.netloc.split(':')[0]
-        except Exception:
-            domain = "Unknown"
-        
-        # Send result
-        with open(result_path, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=result_filename,
-                caption=(
-                    f"✅ <b>M3U Host Analysis Complete!</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"🎯 Target: <code>{domain}</code>\n"
-                    f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-                    f"📊 Report includes:\n"
-                    f"• GeoIP & ISP info\n"
-                    f"• Protection analysis\n"
-                    f"• Host discovery\n"
-                    f"• Panel detection\n"
-                    f"• Vulnerability scan"
-                ),
-                parse_mode='HTML',
-                reply_markup=get_main_menu()
-            )
-        
-        await status_msg.delete()
-        os.remove(result_path)
-        context.user_data.clear()
-        return
-    
-    # Check if we're in combo_to_m3u mode and waiting for base URL
-    if mode == 'combo_to_m3u' and 'combo_data' in context.user_data:
-        base_url = update.message.text.strip()
-        
-        # Validate URL format
-        if not base_url.startswith(('http://', 'https://')):
-            await update.message.reply_text(
-                "❌ <b>Invalid URL!</b>\n\n"
-                "URL must start with http:// or https://\n\n"
-                "<b>Example:</b>\n"
-                "<code>http://example.com:8080</code>",
-                parse_mode='HTML'
-            )
-            return
-        
-        # Remove trailing slash
-        base_url = base_url.rstrip('/')
-        
-        # Show processing message
-        status_msg = await update.message.reply_text(
-            "⏳ <b>Converting Combo→M3U...</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🔄 Creating M3U links...",
-            parse_mode='HTML'
-        )
-        try:
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        except Exception:
-            pass
-        
-        try:
-            # Get stored combo data
-            combo_data = context.user_data.get('combo_data', '')
-            
-            # Convert combo to M3U
-            results = M3UConverter.combo_to_m3u(combo_data, base_url)
-            
-            if not results:
-                await status_msg.edit_text(
-                    "❌ <b>No valid combos found!</b>\n\n"
-                    "Make sure file contains username:password format",
-                    parse_mode='HTML'
-                )
-                context.user_data.clear()
-                return
-            
-            # Create result file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"COMBO_TO_M3U_{timestamp}.txt"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            
-            with open(result_path, 'w', encoding='utf-8') as f:
-                f.write(f"# Combo to M3U Conversion\n")
-                f.write(f"# Converted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"# Base URL: {base_url}\n")
-                f.write(f"# Total M3U Links: {len(results)}\n")
-                f.write("#" + "="*50 + "\n\n")
-                f.write('\n'.join(sorted(results)))
-            
-            # Send result
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>Combo→M3U Complete!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 Created: {len(results):,} M3U links\n"
-                        f"🌐 Base URL: <code>{base_url}</code>\n"
-                        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            
-            await status_msg.delete()
-            os.remove(result_path)
-            context.user_data.clear()
-            
-        except Exception as e:
-            logger.error("="*70)
-            logger.error("❌ ERROR IN handle_text_message (combo_to_m3u)")
-            logger.error(f"Error Type: {type(e).__name__}")
-            logger.error(f"Error Message: {e}")
-            logger.error("📍 FULL TRACEBACK:")
-            logger.error(traceback.format_exc())
-            logger.error("="*70)
-            
-            await status_msg.edit_text(
-                f"❌ <b>Error occurred</b>\n\n"
-                f"Please try again\n"
-                f"Error: {str(e)}",
-                parse_mode='HTML'
-            )
-            context.user_data.clear()
-        return
-    
-    # MAC→M3U flow: ask host then MAC
-    if mode == 'mac_to_m3u':
-        step = context.user_data.get('step')
-        if step == 'ask_host':
-            host = update.message.text.strip()
-            if not host.startswith(('http://','https://')):
-                await update.message.reply_html("❌ <b>Invalid host</b>\nExample: <code>http://example.com:8080</code>")
-                return
-            context.user_data['host'] = host.rstrip('/')
-            context.user_data['step'] = 'ask_mac'
-            await update.message.reply_html(
-                "✅ Host saved!\n\n📝 Now send MAC address (format: <code>00:1A:79:xx:xx:xx</code>)"
-            )
-            return
-        elif step == 'ask_mac':
-            mac = update.message.text.strip().upper()
-            if not re.match(r"(?i)^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", mac):
-                await update.message.reply_html("❌ <b>Invalid MAC format</b>")
-                return
-            host = context.user_data.get('host')
-            status_msg = await update.message.reply_html("⏳ <b>Fetching channels...</b>")
-        try:
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-        except Exception:
-            pass
-            channels, err = MACConverter.mac_to_m3u(host, mac)
-            if err or not channels:
-                await status_msg.edit_text(
-                    f"❌ <b>Failed</b>\n{err or 'No channels found'}",
-                    parse_mode='HTML'
-                )
-                context.user_data.clear()
-                return
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            result_filename = f"MAC_TO_M3U_{timestamp}.m3u"
-            result_path = os.path.join(TEMP_DIR, result_filename)
-            with open(result_path, 'w', encoding='utf-8') as f:
-                f.write('#EXTM3U\n')
-                for ch in channels:
-                    name = ch.get('name','Channel')
-                    num = ch.get('number','0')
-                    url = ch.get('url','')
-                    f.write(f"#EXTINF:-1 tvg-id=\"\" tvg-name=\"{name}\" tvg-logo=\"\" group-title=\"\",{name}\n")
-                    f.write(f"{url}\n")
-            with open(result_path, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=result_filename,
-                    caption=(
-                        f"✅ <b>MAC→M3U Complete!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 Channels: {len(channels):,}\n"
-                        f"🌐 Host: <code>{host}</code>\n"
-                        f"🖥️ MAC: <code>{mac}</code>"
-                    ),
-                    parse_mode='HTML',
-                    reply_markup=get_main_menu()
-                )
-            await status_msg.delete()
-            os.remove(result_path)
-            context.user_data.clear()
-            return
-    
-    # M3U Manual Check - single URL probe
-    if mode == 'm3u_manual':
-        url = update.message.text.strip()
-        logger.info(f"M3U Manual Check: Processing URL: {url[:50]}...")
         if not url.startswith(('http://','https://')):
             await update.message.reply_html("❌ <b>Invalid URL</b>\n\nURL must start with http:// or https://")
             context.user_data.clear()
@@ -5563,7 +4253,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"📊 URLs: {len(mac_urls):,}"
                 ),
                 parse_mode='HTML',
-                reply_markup=get_main_menu()
+                reply_markup=get_redo_menu("m3u_to_mac", "🔄 Convert More")
             )
         os.remove(result_path)
         context.user_data.clear()
