@@ -1329,13 +1329,23 @@ class M3UProbe:
     @staticmethod
     def fetch_first_group(m3u_url: str, timeout: int = 5, proxies: dict | None = None, max_kb: int = 256, force_fetch: bool = False) -> str:
         """Fetch M3U and count channels by category. Returns formatted string like 'Family: 100 | Adult: 50' or empty on error."""
+        logger.info(f"fetch_first_group called: url={m3u_url[:60]}..., force_fetch={force_fetch}, max_kb={max_kb}")
+        
         # Check Fast Mode setting (can be bypassed with force_fetch for manual checks)
         fast_mode = GLOBAL_SETTINGS.get('m3u_fast_mode', True)
+        logger.info(f"Fast Mode: {fast_mode}, Force Fetch: {force_fetch}")
+        
         if fast_mode and not force_fetch:
             # Skip M3U download in Fast Mode (unless forced)
+            logger.info("Skipping M3U download (Fast Mode enabled, force_fetch=False)")
             return ""
         
-        if not HAS_REQUESTS or not m3u_url:
+        if not HAS_REQUESTS:
+            logger.error("HAS_REQUESTS is False - requests library not available")
+            return ""
+        
+        if not m3u_url:
+            logger.warning("m3u_url is empty")
             return ""
         
         try:
@@ -1353,9 +1363,13 @@ class M3UProbe:
             
             headers = {"User-Agent": user_agents[0]}
             
+            logger.info(f"Downloading M3U (max {max_kb}KB)...")
             # Stream download with size limit
             r = Net.get(m3u_url, timeout=timeout, stream=True, proxies=proxies, headers=headers)
+            logger.info(f"HTTP Status: {r.status_code}")
+            
             if r.status_code != 200:
+                logger.warning(f"HTTP request failed with status {r.status_code}")
                 return ""
             
             # Read up to max_kb
@@ -1366,9 +1380,12 @@ class M3UProbe:
                 if len(content) >= max_bytes:
                     break
             
+            logger.info(f"Downloaded {len(content)} bytes")
+            
             # Parse M3U and count channels by group-title
             text = content.decode('utf-8', errors='ignore')
             lines = text.split('\n')
+            logger.info(f"Parsing {len(lines)} lines...")
             
             category_counts = {}
             total = 0
@@ -1405,19 +1422,27 @@ class M3UProbe:
                         
                         category_counts[cat_key] = category_counts.get(cat_key, 0) + 1
             
-            if not category_counts:
-                # No categories found, just return total count
-                return str(total) if total > 0 else ""
+            logger.info(f"Found {total} total channels, {len(category_counts)} categories")
             
-            # Format as "Category1: X | Category2: Y | ..."
-            # Sort by count (descending) and show top categories
-            sorted_cats = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
-            parts = [f"{cat}: {count}" for cat, count in sorted_cats[:10]]  # Top 10 categories
+            # REDLINE behavior: Only show Family and Adult categories
+            parts = []
+            if 'Family' in category_counts:
+                parts.append(f"Family: {category_counts['Family']}")
+            if 'Adult' in category_counts:
+                parts.append(f"Adult: {category_counts['Adult']}")
             
-            return " | ".join(parts)
+            if not parts:
+                # No Family or Adult found, return empty
+                logger.info("No Family or Adult categories found")
+                return ""
+            
+            result = " | ".join(parts)
+            logger.info(f"Returning Family/Adult result: {result}")
+            return result
             
         except Exception as e:
-            logger.debug(f"fetch_first_group error: {e}")
+            logger.error(f"fetch_first_group error: {e}")
+            logger.error(traceback.format_exc())
             return ""
 
 class UpProbe:
@@ -3000,6 +3025,14 @@ def get_main_menu() -> InlineKeyboardMarkup:
 def get_back_button() -> InlineKeyboardMarkup:
     """Create back button"""
     keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_scan_another_menu(scan_type: str = "m3u") -> InlineKeyboardMarkup:
+    """Create scan another or back menu"""
+    keyboard = [
+        [InlineKeyboardButton("🔄 Scan Another", callback_data=f"{scan_type}_manual")],
+        [InlineKeyboardButton("⬅️ Back to Menu", callback_data="back")]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -5361,16 +5394,33 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.info(f"M3U probe result: ok={ok}, err={err}")
         if ok:
             logger.info(f"M3U info keys: {list(info.keys())}")
+            
+            # Fetch channel categories
+            m3u_url = info.get('m3u', '')
+            logger.info(f"Attempting to fetch channels from: {m3u_url[:80]}...")
+            
+            try:
+                # Update status to show fetching
+                await status_msg.edit_text(
+                    f"⏳ <b>Probing M3U...</b>\n"
+                    f"⚙️ <code>{settings_line}</code>\n\n"
+                    f"📊 Fetching channel categories...",
+                    parse_mode='HTML'
+                )
+            except Exception:
+                pass
+            
             try:
                 # Force fetch channels with categories for manual check (bypass Fast Mode)
-                ch = M3UProbe.fetch_first_group(info.get('m3u',''), timeout=5, proxies=get_proxies(), max_kb=256, force_fetch=True)
+                ch = M3UProbe.fetch_first_group(m3u_url, timeout=10, proxies=get_proxies(), max_kb=512, force_fetch=True)
                 if ch:
                     info['channels'] = ch
-                    logger.info(f"Fetched channels: {ch}")
+                    logger.info(f"✅ Fetched channels: {ch[:200]}..." if len(ch) > 200 else f"✅ Fetched channels: {ch}")
                 else:
-                    logger.warning("No channels fetched (empty result)")
+                    logger.warning("⚠️ No channels fetched (empty result from fetch_first_group)")
             except Exception as ch_err:
-                logger.warning(f"Failed to fetch channels: {ch_err}")
+                logger.error(f"❌ Failed to fetch channels: {ch_err}")
+                logger.error(traceback.format_exc())
             block = M3UProbe.format_manual_block(info)
             logger.info(f"Formatted block length: {len(block)} chars")
             
@@ -5396,9 +5446,22 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 with open(result_path, 'w', encoding='utf-8') as f:
                     f.write(block)
                 
-                # Extract username for caption
-                username_val = info.get('username', 'N/A')
+                # Extract status for caption (privacy: don't show username)
                 status_val = info.get('status', 'Unknown')
+                expires_val = info.get('expires', '-')
+                days_val = info.get('days_left', '')
+                
+                # Generate friendly display name from first name or username
+                try:
+                    user_obj = update.effective_user
+                    if user_obj and user_obj.first_name:
+                        display_name = user_obj.first_name
+                    elif user_obj and user_obj.username:
+                        display_name = f"@{user_obj.username}"
+                    else:
+                        display_name = "User"
+                except Exception:
+                    display_name = "User"
                 
                 with open(result_path, 'rb') as f:
                     await update.message.reply_document(
@@ -5407,12 +5470,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                         caption=(
                             f"✅ <b>M3U Manual Check</b>\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                            f"👤 User: <code>{username_val}</code>\n"
+                            f"👤 User: <b>{display_name}</b>\n"
                             f"📊 Status: <b>{status_val}</b>\n"
                             f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
                         ),
                         parse_mode='HTML',
-                        reply_markup=get_main_menu()
+                        reply_markup=get_scan_another_menu('m3u')
                     )
                 
                 os.remove(result_path)
@@ -5420,7 +5483,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             except Exception as file_err:
                 logger.error(f"Failed to send M3U result as file: {file_err}")
         else:
-            await status_msg.edit_text(f"❌ <b>Failed:</b> {err}", parse_mode='HTML')
+            await status_msg.edit_text(
+                f"❌ <b>Failed:</b> {err}",
+                parse_mode='HTML',
+                reply_markup=get_scan_another_menu('m3u')
+            )
         context.user_data.clear()
         return
     
