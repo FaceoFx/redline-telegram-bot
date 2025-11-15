@@ -3500,63 +3500,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return
 
-    # PHASE 3: M3U Manual (single URL)
-    if mode == 'm3u_manual':
-        url = update.message.text.strip()
-        logger.info(f"M3U Manual Check: Processing URL: {url[:50]}...")
-        if not url.startswith(('http://','https://')):
-            await update.message.reply_html("❌ <b>Invalid URL</b>\n\nURL must start with http:// or https://")
-            return
-        
-        # Show M3U settings being used
-        s = GLOBAL_SETTINGS
-        settings_info = []
-        if s.get('m3u_fast_mode'):
-            settings_info.append("⚡ Fast")
-        if s.get('m3u_use_proxy'):
-            settings_info.append("🔌 Proxy")
-        if s.get('m3u_bypass_mode'):
-            settings_info.append("🛡️ Bypass")
-        if s.get('m3u_all_user_agents'):
-            settings_info.append("🌐 Multi-UA")
-        settings_line = " | ".join(settings_info) if settings_info else "Standard"
-        
-        status_msg = await update.message.reply_html(
-            f"⏳ <b>Probing M3U...</b>\n⚙️ <code>{settings_line}</code>"
-        )
-        try:
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        except Exception:
-            pass
-        ok, info, err = M3UProbe.probe(url, timeout=8, proxies=get_proxies())
-        logger.info(f"M3U probe result: ok={ok}, err={err}")
-        if ok:
-            logger.info(f"M3U info keys: {list(info.keys())}")
-            try:
-                ch = M3UProbe.fetch_first_group(info.get('m3u',''), timeout=5, proxies=get_proxies(), max_kb=256)
-                if ch:
-                    info['channels'] = ch
-                    logger.info(f"Fetched channels: {ch}")
-            except Exception as ch_err:
-                logger.warning(f"Failed to fetch channels: {ch_err}")
-            block = M3UProbe.format_manual_block(info)
-            logger.info(f"Formatted block length: {len(block)} chars")
-            try:
-                # Try to send as plain text first (no HTML parsing issues)
-                await status_msg.edit_text(block, parse_mode=None)
-            except Exception as edit_err:
-                logger.error(f"Failed to edit M3U manual check message: {edit_err}")
-                # Fallback: send as new message
-                await update.message.reply_text(block, parse_mode=None, reply_markup=get_main_menu())
-                try:
-                    await status_msg.delete()
-                except Exception:
-                    pass
-        else:
-            await status_msg.edit_text(f"❌ <b>Failed:</b> {err}", parse_mode='HTML')
-        context.user_data.clear()
-        return
-
     # Settings: set proxy value (text input)
     if mode == 'settings_set_proxy':
         pv = (update.message.text or '').strip()
@@ -4997,6 +4940,64 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             os.remove(result_path)
             context.user_data.clear()
             return
+    
+    # M3U Manual Check - single URL probe
+    if mode == 'm3u_manual':
+        url = update.message.text.strip()
+        logger.info(f"M3U Manual Check: Processing URL: {url[:50]}...")
+        if not url.startswith(('http://','https://')):
+            await update.message.reply_html("❌ <b>Invalid URL</b>\n\nURL must start with http:// or https://")
+            context.user_data.clear()
+            return
+        
+        # Show M3U settings being used
+        s = GLOBAL_SETTINGS
+        settings_info = []
+        if s.get('m3u_fast_mode'):
+            settings_info.append("⚡ Fast")
+        if s.get('m3u_use_proxy'):
+            settings_info.append("🔌 Proxy")
+        if s.get('m3u_bypass_mode'):
+            settings_info.append("🛡️ Bypass")
+        if s.get('m3u_all_user_agents'):
+            settings_info.append("🌐 Multi-UA")
+        settings_line = " | ".join(settings_info) if settings_info else "Standard"
+        
+        status_msg = await update.message.reply_html(
+            f"⏳ <b>Probing M3U...</b>\n⚙️ <code>{settings_line}</code>"
+        )
+        try:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        except Exception:
+            pass
+        ok, info, err = M3UProbe.probe(url, timeout=8, proxies=get_proxies())
+        logger.info(f"M3U probe result: ok={ok}, err={err}")
+        if ok:
+            logger.info(f"M3U info keys: {list(info.keys())}")
+            try:
+                ch = M3UProbe.fetch_first_group(info.get('m3u',''), timeout=5, proxies=get_proxies(), max_kb=256)
+                if ch:
+                    info['channels'] = ch
+                    logger.info(f"Fetched channels: {ch}")
+            except Exception as ch_err:
+                logger.warning(f"Failed to fetch channels: {ch_err}")
+            block = M3UProbe.format_manual_block(info)
+            logger.info(f"Formatted block length: {len(block)} chars")
+            try:
+                # Try to send as plain text first (no HTML parsing issues)
+                await status_msg.edit_text(block, parse_mode=None)
+            except Exception as edit_err:
+                logger.error(f"Failed to edit M3U manual check message: {edit_err}")
+                # Fallback: send as new message
+                await update.message.reply_text(block, parse_mode=None, reply_markup=get_main_menu())
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+        else:
+            await status_msg.edit_text(f"❌ <b>Failed:</b> {err}", parse_mode='HTML')
+        context.user_data.clear()
+        return
     
     # M3U→MAC via text (paste URLs)
     if mode == 'm3u_to_mac':
